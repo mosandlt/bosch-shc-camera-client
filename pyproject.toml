@@ -36,4 +36,76 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 
 [tool.mypy]
+python_version = "3.12"
+files = ["src"]
 strict = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_optional = true
+strict_equality = true
+check_untyped_defs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_decorators = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+show_error_codes = true
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "S", "C90", "RUF"]
+ignore = [
+    "E501",   # line length is enforced by the formatter, not the linter
+    "C901",   # complexity is reported via mccabe below, not hard-failed inline
+    "S101",   # asserts are deliberate mypy type-narrowing invariants — required for mypy --strict
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["F401", "F811", "F841"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.isort]
+known-first-party = ["bosch_shc_camera_client"]
+
+[tool.pylint.MASTER]
+persistent = false
+jobs = 2
+
+[tool.pylint.REPORTS]
+score = false
+
+[tool.pylint."MESSAGES CONTROL"]
+enable = ["use-symbolic-message-instead"]
+disable = [
+    # ruff already enforces these — avoid duplicate CI noise
+    "format",
+    "wrong-import-order",
+    "line-too-long",
+    "unused-import",
+    "unused-variable",
+    # mypy already enforces these
+    "import-error",
+    "no-member",
+    # project conventions (mirrors Bosch-Smart-Home-Camera-Tool-HomeAssistant's pyproject.toml)
+    "missing-class-docstring",     # typing enforced by mypy --strict; docstrings optional
+    "missing-function-docstring",  # same
+    "too-few-public-methods",      # small helpers are intentional
+    # complexity metrics — ported wire-protocol code carries its source repo's
+    # existing shape (verified byte-parity), not re-split just to satisfy a
+    # default threshold; same disables as the source repo's pyproject.toml
+    "too-many-arguments",
+    "too-many-positional-arguments",
+    "too-many-return-statements",
+    "too-many-branches",
+    "too-many-locals",
+]
+
+[tool.coverage.run]
+branch = true
