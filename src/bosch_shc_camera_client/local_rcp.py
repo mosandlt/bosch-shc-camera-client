@@ -1,28 +1,28 @@
-"""Lokales / Cloud-Proxy RCP+ READ über `/rcp.xml` (XML-Format, kein binäres TLV).
+"""Local / cloud-proxy RCP+ READ over `/rcp.xml` (XML format, not binary TLV).
 
-Read-only — Writes brauchen `service`-Account-Auth, die Bosch nur intern hält.
-Diese Datei liefert nur Read-Helfer; Aufrufer (Coordinator) entscheidet wann.
+Read-only — writes need a `service`-account auth level that Bosch keeps internal only.
+This module provides read helpers only; the caller decides when to poll.
 
-Zwei Auth-Modi:
-  LOCAL  — HTTP Digest mit `cbs-…`-User aus `PUT /connection LOCAL`. URL: `https://<cam_ip>:443/rcp.xml?…`.
-  REMOTE — HTTP Basic (empty:empty) mit Cloud-Proxy-Hash-URL aus `PUT /connection REMOTE`.
-           Hash ist die Credential — URL: `https://proxy-XX:42090/{hash}/rcp.xml?…`.
+Two auth modes:
+  LOCAL  — HTTP Digest with the `cbs-…` user from `PUT /connection LOCAL`. URL: `https://<cam_ip>:443/rcp.xml?…`.
+  REMOTE — HTTP Basic (empty:empty) with the cloud-proxy hash URL from `PUT /connection REMOTE`.
+           The hash itself is the credential — URL: `https://proxy-XX:42090/{hash}/rcp.xml?…`.
 
-XML-Response-Format (verifiziert 2026-04-27 gegen Gen2 Outdoor FW 9.40.25):
+XML response format (verified 2026-04-27 against Gen2 Outdoor FW 9.40.25):
   <rcp>
     <command><hex>0xNNNN</hex>…</command>
     <type>P_OCTET|P_STRING|T_WORD|T_DWORD</type>
     <result>
       <dec>N</dec>             ← T_WORD/T_DWORD
-      <str>HEX BYTES…</str>     ← P_OCTET (space-separated hex) oder P_STRING (ASCII)
-      <err>0xNN</err>           ← Read fehlgeschlagen / wrong auth-level
+      <str>HEX BYTES…</str>     ← P_OCTET (space-separated hex) or P_STRING (ASCII)
+      <err>0xNN</err>           ← read failed / wrong auth level
     </result>
   </rcp>
 
-Empfindlichkeiten:
-- Bei Gen2 Outdoor (FW 9.40.25) rotiert `PUT /connection` die Digest-Cred. Ein normaler
-  RCP-Read rotiert *nicht* — verifiziert per Stresstest (10 reads/10 s, Stream blieb up).
-- TLS verify=False: Bosch verwendet eine private CA (NXP-BUID) für die Camera-Cert.
+Gotchas:
+- On Gen2 Outdoor (FW 9.40.25), `PUT /connection` rotates the Digest credential. A plain
+  RCP read does *not* rotate it — verified via stress test (10 reads/10s, stream stayed up).
+- TLS verify=False: Bosch uses a private CA (NXP-BUID) for the camera cert.
 """
 
 import logging

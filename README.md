@@ -10,13 +10,17 @@ Status: early extraction in progress. Not yet feature-complete versus the inline
 
 ## Scope
 
+- Local RCP protocol read access over `/rcp.xml` (Gen2 camera on-device control plane), read-only.
 - Bosch cloud API (`residential.cbs.boschsecurity.com`): auth, video inputs, motion zones, privacy
-  masks, rules, friends/sharing, firmware, lighting.
-- Local RCP protocol (Gen2 camera on-device control plane).
-- SMB/FTP export helpers for local recording targets.
+  masks, rules, friends/sharing, firmware, lighting — **planned**, not yet extracted (`shc.py`/`rcp.py`
+  in the source integration are coupled to a `hass`/coordinator-provided `aiohttp.ClientSession` and
+  need a session-injection refactor before they can move here cleanly).
 
 Out of scope (stays integration-specific, not extracted here): FCM push-notification plumbing tied to
-Home Assistant's recorder/snapshot-store internals, and anything HA-entity-shaped.
+Home Assistant's recorder/snapshot-store internals, anything HA-entity-shaped, and the SMB/FTP export
+helpers (`smb.py`) — those reach into the HA integration's coordinator object directly
+(`coordinator.hass`, `coordinator.options`, private state) rather than being a standalone API client, so
+they don't belong in a generic library without their own decoupling pass first.
 
 ## Install
 
