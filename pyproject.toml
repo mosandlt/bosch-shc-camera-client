@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bosch-shc-camera-client"
-version = "0.2.0"
+version = "0.3.0"
 description = "Async Python client library for Bosch Smart Home Camera cloud + local (RCP) APIs."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -66,7 +66,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["F401", "F811", "F841"]
+"tests/**" = ["S", "F401", "F811", "F841"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 15

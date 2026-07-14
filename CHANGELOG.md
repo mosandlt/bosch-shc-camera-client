@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.3.0] - 2026-07-14
+
+Extracted `auth_utils.py` (HTTP Digest authentication, RFC 7616/2617) from the Home Assistant
+integration — verified zero coupling to `hass`/coordinator (already took `session:
+aiohttp.ClientSession` as a plain parameter in the source repo). Ported `tests/test_auth_utils.py`
+(65 tests) with the source repo's HA-avoidance import-shim removed (no longer needed — this package has
+no HA dependency to avoid). Minor cleanup: `_build_digest_header`'s local `from urllib.parse import
+urlparse` moved to the module top level (no functional change). 100% coverage maintained across all
+3 modules.
+
 ## [v0.1.0] - 2026-07-14
 
 Initial extraction: `local_rcp.py` only, copied from the Home Assistant integration (zero internal

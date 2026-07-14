@@ -11,10 +11,13 @@ Status: early extraction in progress. Not yet feature-complete versus the inline
 ## Scope
 
 - Local RCP protocol read access over `/rcp.xml` (Gen2 camera on-device control plane), read-only.
+- HTTP Digest authentication (RFC 7616/2617) — `auth_utils.async_digest_request`, used for local camera
+  LAN endpoints that require Digest auth.
 - Bosch cloud API (`residential.cbs.boschsecurity.com`): auth, video inputs, motion zones, privacy
   masks, rules, friends/sharing, firmware, lighting — **planned**, not yet extracted (`shc.py`/`rcp.py`
   in the source integration are coupled to a `hass`/coordinator-provided `aiohttp.ClientSession` and
-  need a session-injection refactor before they can move here cleanly).
+  coordinator-owned caches; need a session-injection + cache-redesign refactor before they can move here
+  cleanly — see the source repo's `knowledge-base/ha-core-submission-plan.md` for the concrete spec).
 
 Out of scope (stays integration-specific, not extracted here): FCM push-notification plumbing tied to
 Home Assistant's recorder/snapshot-store internals, anything HA-entity-shaped, and the SMB/FTP export
