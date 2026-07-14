@@ -3,7 +3,7 @@
 cloud_put_json is the single extracted piece of the source integration's
 5 cloud-setter functions (privacy/light/light_component/notifications/pan):
 build Bearer headers, PUT JSON with a timeout, classify the HTTP status,
-optionally parse a 200 response body. Everything else (fallback tiers,
+optionally parse the response body. Everything else (fallback tiers,
 coordinator caches, notifications) stays in the source integration.
 """
 
@@ -22,9 +22,15 @@ URL = "https://residential.cbs.boschsecurity.com/v11/video_inputs/cam1/privacy"
 def _make_session(
     status: int, json_data: dict | None = None, text: str = ""
 ) -> MagicMock:
+    """Build a mock session. `json_data=None` simulates a response with no
+    parseable JSON body (e.g. a real HTTP 204's empty body) -- `resp.json()`
+    raises, matching aiohttp's own behavior for an empty payload."""
     resp = MagicMock()
     resp.status = status
-    resp.json = AsyncMock(return_value=json_data or {})
+    if json_data is None:
+        resp.json = AsyncMock(side_effect=ValueError("no JSON body"))
+    else:
+        resp.json = AsyncMock(return_value=json_data)
     resp.text = AsyncMock(return_value=text)
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=resp)
@@ -42,12 +48,21 @@ class TestCloudPutJsonSuccess:
         assert result == CloudPutResult(ok=True, status=204, body=None, text="")
 
     @pytest.mark.asyncio
-    async def test_201_is_ok_with_no_body(self):
+    async def test_201_with_no_body_falls_back_to_none(self):
         session = _make_session(201)
         result = await cloud_put_json(session, "tok", URL, {})
         assert result.ok is True
         assert result.status == 201
         assert result.body is None
+
+    @pytest.mark.asyncio
+    async def test_201_with_json_body_is_parsed(self):
+        """Some Bosch endpoints (e.g. lighting/switch) return a JSON body on
+        201, not just 200 -- the parse attempt covers every ok status."""
+        session = _make_session(201, {"frontLightSettings": {"brightness": 50}})
+        result = await cloud_put_json(session, "tok", URL, {"enabled": True})
+        assert result.ok is True
+        assert result.body == {"frontLightSettings": {"brightness": 50}}
 
     @pytest.mark.asyncio
     async def test_200_with_json_body_is_parsed(self):
@@ -65,9 +80,6 @@ class TestCloudPutJsonSuccess:
     @pytest.mark.asyncio
     async def test_200_with_unparseable_body_falls_back_to_none(self):
         session = _make_session(200)
-        session.put.return_value.__aenter__.return_value.json = AsyncMock(
-            side_effect=ValueError("not json")
-        )
         result = await cloud_put_json(session, "tok", URL, {})
         assert result.ok is True
         assert result.status == 200

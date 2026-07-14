@@ -48,9 +48,11 @@ async def cloud_put_json(
     Returns a `CloudPutResult`: `ok=True` for HTTP 200/201/204, `status=None`
     if the request timed out or hit a network error (caught, not raised —
     same graceful-degradation contract every caller in the source integration
-    already relied on). `body` is the parsed JSON response only when the
-    caller gets one (HTTP 200 with a JSON payload) — most Bosch cloud PUTs
-    respond 204 with no body, so this is commonly `None` even on success.
+    already relied on). `body` is the parsed JSON response whenever the write
+    succeeded and the response has a JSON payload — attempted for any of
+    200/201/204, since some Bosch endpoints return a body on 201 as well as
+    200, and a 204's empty body simply fails to parse and falls back to
+    `None` (matches every existing caller's expectation either way).
     `text` is the raw response text whenever a real HTTP response was
     received (any status, not just success) — useful for logging the API's
     own error message on a non-2xx response (e.g. Bosch's 400 body explains
@@ -71,7 +73,7 @@ async def cloud_put_json(
                     text = await resp.text()
                 except Exception:  # noqa: S110 # defensive text read; status already known, caller has a safe default
                     pass
-                if ok and resp.status == 200:
+                if ok:
                     try:
                         parsed = await resp.json()
                     except Exception:  # noqa: S110 # defensive JSON parse; write already sent, caller has a safe default

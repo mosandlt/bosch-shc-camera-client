@@ -1,5 +1,16 @@
 # Changelog
 
+## [v0.5.3] - 2026-07-14
+
+Fixed `cloud_put_json`'s JSON-parse attempt: was gated on `status == 200` specifically, but the source
+integration's Gen2 wallwasher light-component setter parses a JSON response on 201 too (some Bosch
+`lighting/switch` responses land on 201). Now attempts the parse for any ok status (200/201/204) — a
+204's genuinely-empty body still just fails to parse and falls back to `None`, matching every existing
+caller's expectation either way; this only changes behavior for a 201 that actually carries a body,
+which was silently dropped before.
+
+3 new tests, 100% line+branch coverage maintained across all 5 modules.
+
 ## [v0.5.2] - 2026-07-14
 
 `CloudPutResult` gains a `text` field: the raw response body text, captured whenever a real HTTP
