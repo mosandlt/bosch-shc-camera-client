@@ -9,11 +9,13 @@ does the protocol work with what it's handed.
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import logging
 import re as _re
 import ssl
 import struct
 import time
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
 
@@ -698,3 +700,420 @@ def _parse_iva_catalog(raw: bytes) -> list[dict[str, Any]]:
                 }
             )
     return modules
+
+
+# ── Camera data fetch (reads multiple RCP values for one camera) ─────────────
+
+
+@dataclass
+class RcpCameraData:
+    """Result of a single `fetch_rcp_camera_data` call.
+
+    Every field is `None` when that command wasn't read, failed, or was
+    skipped this round (3-strikes suppression) -- the caller decides what to
+    do with a `None` (e.g. leave its own cache entry untouched).
+    """
+
+    dimmer: int | None = None
+    privacy: int | None = None
+    clock_offset: float | None = None
+    lan_ip: str | None = None
+    product_name: str | None = None
+    bitrate: list[int] | None = None
+    alarm_catalog: list[dict[str, Any]] | None = None
+    motion_zones: list[dict[str, Any]] | None = None
+    motion_coords: list[dict[str, float]] | None = None
+    tls_cert: dict[str, Any] | None = None
+    network_services: list[str] | None = None
+    iva_catalog: list[dict[str, Any]] | None = None
+
+
+async def fetch_rcp_camera_data(
+    session: aiohttp.ClientSession,
+    ssl_context: ssl.SSLContext,
+    session_cache: RcpSessionCache,
+    session_locks: RcpSessionLocks,
+    cmd_failures: dict[str, int],
+    cam_id: str,
+    proxy_host: str,
+    proxy_hash: str,
+) -> RcpCameraData | None:
+    """Fetch RCP data (LED dimmer, privacy state, etc.) for one camera via cloud proxy.
+
+    Opens a fresh RCP session, reads multiple RCP commands, and returns the
+    parsed results as a data object -- this function is pure with respect to
+    any coordinator/cache state; the caller decides what to do with the
+    result (merge into its own caches, etc). Returns `None` if no RCP session
+    could be opened at all (nothing read). Never raises for a single command's
+    read/parse failure -- RCP is read-only supplementary data.
+
+    `cmd_failures` is a per-camera dict the caller owns and passes in
+    (mutated in place): commands that consistently return an unsupported/
+    error response are skipped after 3 consecutive failures, and the
+    skip-state persists across calls via this same dict.
+    """
+    session_id = await get_cached_rcp_session(
+        ssl_context, session_cache, proxy_host, proxy_hash, session_locks
+    )
+    if not session_id:
+        _LOGGER.debug(
+            "fetch_rcp_camera_data: could not open RCP session for %s", cam_id
+        )
+        return None
+
+    rcp_base = f"https://{proxy_host}/{proxy_hash}/rcp.xml"
+
+    # Alias that forwards session_cache so any 401/403/0x0c0d response
+    # drops the cached session ID and forces a fresh handshake next call.
+    async def _read(command: str, type_: str = "P_OCTET", num: int = 0) -> bytes | None:
+        return await rcp_read(
+            session,
+            rcp_base,
+            command,
+            session_id,
+            type_=type_,
+            num=num,
+            session_cache=session_cache,
+        )
+
+    def _skip(cmd: str) -> bool:
+        return bool(cmd_failures.get(cmd, 0) >= 3)
+
+    def _mark_fail(cmd: str) -> None:
+        cmd_failures[cmd] = cmd_failures.get(cmd, 0) + 1
+        if cmd_failures[cmd] == 3:
+            _LOGGER.debug(
+                "RCP command %s: 3 consecutive failures for %s — skipping for this session",
+                cmd,
+                cam_id[:8],
+            )
+
+    def _mark_ok(cmd: str) -> None:
+        cmd_failures.pop(cmd, None)
+
+    data = RcpCameraData()
+
+    # Read LED dimmer (0x0c22) -- T_WORD, num=1 -> integer 0-100
+    # Gen2 returns 0x0A0A (2570) — different format/range, not 0-100. After 3
+    # consecutive out-of-range reads the command is skipped for this session.
+    if not _skip("0x0c22"):
+        try:
+            raw = await _read("0x0c22", type_="T_WORD", num=1)
+            if _is_xml_envelope(raw):
+                # Gen2 cloud proxy returned the XML envelope (or its whitespace
+                # prefix) — mark as fail silently so retries are bounded.
+                _mark_fail("0x0c22")
+            elif raw and len(raw) >= 2:
+                dimmer_val = struct.unpack(">H", raw[:2])[0]
+                if 0 <= dimmer_val <= 100:
+                    data.dimmer = int(dimmer_val)
+                    _LOGGER.debug("RCP LED dimmer for %s: %d%%", cam_id, dimmer_val)
+                    _mark_ok("0x0c22")
+                else:
+                    _mark_fail("0x0c22")
+                    _LOGGER.debug(
+                        "RCP LED dimmer for %s: out-of-range raw=%d — cache skipped",
+                        cam_id,
+                        dimmer_val,
+                    )
+            else:
+                # Truthy, non-XML, but shorter than the expected 2 bytes.
+                # Without this branch neither _mark_fail nor _mark_ok ever
+                # fires for this shape, so a command that consistently
+                # returns a too-short reply is never counted toward the
+                # 3-strikes skip and retries every poll forever (bug-hunt
+                # 2026-07-03).
+                _mark_fail("0x0c22")
+        except Exception as err:
+            _LOGGER.debug("RCP dimmer read error for %s: %s", cam_id, err)
+
+    # Read privacy mask (0x0d00) -- P_OCTET 4B -> byte[1]=1 means ON
+    if not _skip("0x0d00"):
+        try:
+            raw = await _read("0x0d00", type_="P_OCTET")
+            if _is_xml_envelope(raw):
+                _mark_fail("0x0d00")
+            elif raw and len(raw) >= 2:
+                data.privacy = int(raw[1])
+                _LOGGER.debug("RCP privacy mask for %s: byte[1]=%d", cam_id, raw[1])
+                _mark_ok("0x0d00")
+            else:
+                # Truthy-but-too-short / empty / None — see 0x0c22 comment
+                # above (bug-hunt 2026-07-03).
+                _mark_fail("0x0d00")
+        except Exception as err:
+            _LOGGER.debug("RCP privacy read error for %s: %s", cam_id, err)
+
+    # Read camera clock (0x0a0f) -- 8 bytes -> compute offset vs server time
+    # RCP clock format: year(2B big-endian) month(1B) day(1B) hour(1B) min(1B) sec(1B) weekday(1B)
+    # Some firmwares (observed on Gen2) return a different layout with fields
+    # that fall outside datetime ranges. Validate before constructing cam_dt so
+    # parse failures skip silently instead of raising.
+    if not _skip("0x0a0f"):
+        try:
+            raw = await _read("0x0a0f", type_="P_OCTET")
+            if _is_xml_envelope(raw):
+                _mark_fail("0x0a0f")
+            elif raw and len(raw) >= 8:
+                year, month, day, hour, minute, second, _ = struct.unpack(
+                    ">HBBBBBB", raw[:8]
+                )
+                if (
+                    1970 <= year <= 2100
+                    and 1 <= month <= 12
+                    and 1 <= day <= 31
+                    and 0 <= hour <= 23
+                    and 0 <= minute <= 59
+                    and 0 <= second <= 59
+                ):
+                    try:
+                        cam_dt = _dt.datetime(
+                            year, month, day, hour, minute, second, tzinfo=_dt.UTC
+                        )
+                    except ValueError:
+                        # Per-field ranges passed but the combination isn't a
+                        # real calendar date (e.g. day=30, month=2). Without
+                        # this catch the 3-strikes counter below never sees
+                        # this failure mode, so a firmware/proxy returning
+                        # such garbage would retry every coordinator poll
+                        # forever instead of being suppressed like every
+                        # other guarded RCP field.
+                        _mark_fail("0x0a0f")
+                        _LOGGER.debug(
+                            "RCP clock for %s: invalid calendar date "
+                            "(Y=%d M=%d D=%d h=%d m=%d s=%d) — cache skipped",
+                            cam_id,
+                            year,
+                            month,
+                            day,
+                            hour,
+                            minute,
+                            second,
+                        )
+                    else:
+                        server_dt = _dt.datetime.now(_dt.UTC)
+                        offset = (cam_dt - server_dt).total_seconds()
+                        data.clock_offset = round(offset, 1)
+                        _LOGGER.debug("RCP clock offset for %s: %.1fs", cam_id, offset)
+                        _mark_ok("0x0a0f")
+                else:
+                    _mark_fail("0x0a0f")
+                    _LOGGER.debug(
+                        "RCP clock for %s: unexpected layout "
+                        "(Y=%d M=%d D=%d h=%d m=%d s=%d) — cache skipped",
+                        cam_id,
+                        year,
+                        month,
+                        day,
+                        hour,
+                        minute,
+                        second,
+                    )
+            else:
+                # Truthy-but-too-short / empty / None — see 0x0c22 comment
+                # earlier in this function (bug-hunt 2026-07-03).
+                _mark_fail("0x0a0f")
+        except Exception as err:
+            _LOGGER.debug("RCP clock read error for %s: %s", cam_id, err)
+
+    # Read LAN IP via RCP (0x0a36) -- 4 bytes IPv4 or ASCII string
+    # Gen1 returns raw bytes; Gen2 wraps the response in a nested XML document
+    # whose hex-decoded payload starts with "<rcp>". Reject both empty and
+    # XML-wrapped values so the result isn't polluted.
+    if not _skip("0x0a36"):
+        try:
+            raw = await _read("0x0a36", type_="P_OCTET")
+            if raw:
+                if len(raw) == 4:
+                    ip_str = ".".join(str(b) for b in raw)
+                else:
+                    ip_str = (
+                        raw.rstrip(b"\x00").decode("ascii", errors="replace").strip()
+                    )
+                if ip_str and ip_str != "0.0.0.0" and not ip_str.startswith("<"):  # noqa: S104 # string comparison to filter unusable RCP payload, not a bind address
+                    data.lan_ip = ip_str
+                    _LOGGER.debug("RCP LAN IP for %s: %s", cam_id, ip_str)
+                    _mark_ok("0x0a36")
+                else:
+                    _mark_fail("0x0a36")
+                    _LOGGER.debug(
+                        "RCP LAN IP for %s: unusable payload (%r) — cache skipped",
+                        cam_id,
+                        ip_str[:40],
+                    )
+            elif raw is None:
+                _mark_fail("0x0a36")
+        except Exception as err:
+            _LOGGER.debug("RCP LAN IP read error for %s: %s", cam_id, err)
+
+    # Read product name via RCP (0x0aea) -- null-terminated ASCII
+    # Same Gen2 XML-wrapper caveat as LAN IP above.
+    if not _skip("0x0aea"):
+        try:
+            raw = await _read("0x0aea", type_="P_OCTET")
+            if raw:
+                name_str = raw.rstrip(b"\x00").decode("ascii", errors="replace").strip()
+                if name_str and not name_str.startswith("<"):
+                    data.product_name = name_str
+                    _LOGGER.debug("RCP product name for %s: %s", cam_id, name_str)
+                    _mark_ok("0x0aea")
+                else:
+                    _mark_fail("0x0aea")
+                    _LOGGER.debug(
+                        "RCP product name for %s: unusable payload (%r) — cache skipped",
+                        cam_id,
+                        name_str[:40],
+                    )
+            elif raw is None:
+                _mark_fail("0x0aea")
+        except Exception as err:
+            _LOGGER.debug("RCP product name read error for %s: %s", cam_id, err)
+
+    # Read bitrate ladder (0x0c81) -- series of big-endian uint32 kbps values
+    # Gen1/360 cameras return XML-wrapped responses via cloud proxy — guard against
+    # interpreting XML as binary (produces garbage kbps values like 168442994).
+    # Gen2 FW 9.40 prefixes the XML with whitespace (\n\n<rcp>…), so lstrip first.
+    if not _skip("0x0c81"):
+        try:
+            raw = await _read("0x0c81", type_="P_OCTET")
+            if _is_xml_envelope(raw):
+                _mark_fail("0x0c81")
+            elif raw and len(raw) >= 4:
+                n = len(raw) // 4
+                ladder = [
+                    struct.unpack(">I", raw[i * 4 : (i + 1) * 4])[0] for i in range(n)
+                ]
+                # Sanity-check: valid bitrate values are 100-50000 kbps
+                if all(100 <= v <= 50_000 for v in ladder):
+                    data.bitrate = ladder
+                    _LOGGER.debug("RCP bitrate ladder for %s: %s", cam_id, ladder)
+                    _mark_ok("0x0c81")
+                else:
+                    _mark_fail("0x0c81")
+                    _LOGGER.debug(
+                        "RCP bitrate for %s: out-of-range values %s — cache skipped",
+                        cam_id,
+                        ladder[:4],
+                    )
+            else:
+                # Truthy-but-too-short / empty / None — see 0x0c22 comment
+                # earlier in this function (bug-hunt 2026-07-03).
+                _mark_fail("0x0c81")
+        except Exception as err:
+            _LOGGER.debug("RCP bitrate read error for %s: %s", cam_id, err)
+
+    # ── Phase 2 RCP reads ────────────────────────────────────────────────────
+
+    # Read alarm catalog (0x0c38) -- UTF-16-BE, ~1366 bytes
+    # Contains all alarm types the camera firmware supports (virtual 0-15,
+    # flame, smoke, glass break, audio, storage, etc.)
+    # Unlike every Phase-1 command and 0x0c00/0x0b91 below, this previously
+    # had no _skip guard at all — on a camera that doesn't support this
+    # command it retried every single coordinator poll forever instead of
+    # being suppressed after 3 consecutive failures (bug-hunt 2026-07-03).
+    if not _skip("0x0c38"):
+        try:
+            raw = await _read("0x0c38", type_="P_OCTET")
+            if _is_xml_envelope(raw):
+                _mark_fail("0x0c38")
+            elif raw and len(raw) > 10:
+                alarms = _parse_alarm_catalog(raw)
+                data.alarm_catalog = alarms
+                _LOGGER.debug("RCP alarm catalog for %s: %d types", cam_id, len(alarms))
+                _mark_ok("0x0c38")
+            else:
+                _mark_fail("0x0c38")
+        except Exception as err:
+            _LOGGER.debug("RCP alarm catalog read error for %s: %s", cam_id, err)
+
+    # Read motion detection zones (0x0c00) -- 5 zones x 28 bytes
+    if not _skip("0x0c00"):
+        try:
+            raw = await _read("0x0c00", type_="P_OCTET")
+            if raw and len(raw) >= 28:
+                zones = _parse_motion_zones(raw)
+                data.motion_zones = zones
+                _LOGGER.debug("RCP motion zones for %s: %d zones", cam_id, len(zones))
+                _mark_ok("0x0c00")
+            elif raw is None:
+                _mark_fail("0x0c00")
+        except Exception as err:
+            _LOGGER.debug("RCP motion zones read error for %s: %s", cam_id, err)
+
+    # Read motion zone coordinates (0x0c0a) -- int32 normalized +-1.0 as x2^31
+    # Same missing-skip-guard bug as 0x0c38 above (bug-hunt 2026-07-03).
+    if not _skip("0x0c0a"):
+        try:
+            raw = await _read("0x0c0a", type_="P_OCTET")
+            if _is_xml_envelope(raw):
+                _mark_fail("0x0c0a")
+            elif raw and len(raw) >= 16:
+                coords = _parse_motion_coords(raw)
+                data.motion_coords = coords
+                _LOGGER.debug(
+                    "RCP motion coords for %s: %d points", cam_id, len(coords)
+                )
+                _mark_ok("0x0c0a")
+            else:
+                _mark_fail("0x0c0a")
+        except Exception as err:
+            _LOGGER.debug("RCP motion coords read error for %s: %s", cam_id, err)
+
+    # Read TLS certificate (0x0b91) -- DER X.509, ~455 bytes
+    if not _skip("0x0b91"):
+        try:
+            raw = await _read("0x0b91", type_="P_OCTET")
+            if raw and len(raw) > 50:
+                cert_info = _parse_tls_cert(raw)
+                data.tls_cert = cert_info
+                _LOGGER.debug("RCP TLS cert for %s: %s", cam_id, cert_info)
+                _mark_ok("0x0b91")
+            elif raw is None:
+                _mark_fail("0x0b91")
+        except Exception as err:
+            _LOGGER.debug("RCP TLS cert read error for %s: %s", cam_id, err)
+
+    # Read network services (0x0c62) -- TLV list, ~469 bytes
+    # Gen1/360 cameras via cloud proxy return the full RCP XML document — guard
+    # against caching raw XML as service names. Was `not raw.startswith(b"<")`,
+    # which misses the whitespace-prefixed XML envelope Gen2 FW 9.40 returns
+    # (same case 0x0c81 already guards against with _is_xml_envelope's lstrip)
+    # — a whitespace-prefixed envelope decoded as garbage service names
+    # instead of being rejected. Also had no _skip guard (bug-hunt 2026-07-03).
+    if not _skip("0x0c62"):
+        try:
+            raw = await _read("0x0c62", type_="P_OCTET")
+            if _is_xml_envelope(raw):
+                _mark_fail("0x0c62")
+            elif raw and len(raw) > 10:
+                services = _parse_network_services(raw)
+                data.network_services = services
+                _LOGGER.debug(
+                    "RCP network services for %s: %d services", cam_id, len(services)
+                )
+                _mark_ok("0x0c62")
+            else:
+                _mark_fail("0x0c62")
+        except Exception as err:
+            _LOGGER.debug("RCP network services read error for %s: %s", cam_id, err)
+
+    # Read IVA analytics catalog (0x0b60) -- 65 entries x 6B
+    # Same missing-skip-guard bug as 0x0c38/0x0c0a above (bug-hunt 2026-07-03).
+    if not _skip("0x0b60"):
+        try:
+            raw = await _read("0x0b60", type_="P_OCTET")
+            if _is_xml_envelope(raw):
+                _mark_fail("0x0b60")
+            elif raw and len(raw) >= 6:
+                analytics = _parse_iva_catalog(raw)
+                data.iva_catalog = analytics
+                _LOGGER.debug(
+                    "RCP IVA catalog for %s: %d modules", cam_id, len(analytics)
+                )
+                _mark_ok("0x0b60")
+            else:
+                _mark_fail("0x0b60")
+        except Exception as err:
+            _LOGGER.debug("RCP IVA catalog read error for %s: %s", cam_id, err)
+
+    return data

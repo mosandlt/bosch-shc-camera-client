@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bosch-shc-camera-client"
-version = "0.4.0"
+version = "0.5.0"
 description = "Async Python client library for Bosch Smart Home Camera cloud + local (RCP) APIs."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -116,6 +116,9 @@ disable = [
     "too-many-return-statements",
     "too-many-branches",
     "too-many-locals",
+    "too-many-instance-attributes",  # RcpCameraData mirrors 12 independent RCP reads
+    "too-many-boolean-expressions",  # RCP clock field validation checks 6 ranges at once
+    "too-many-statements",  # fetch_rcp_camera_data sequentially reads 12 RCP commands
     # rcp.py: RCP protocol layer, ported byte-for-byte from the source repo —
     # same disables as that repo's pyproject.toml for these exact patterns.
     "broad-exception-caught",  # parsers/protocol readers catch broadly to survive malformed data

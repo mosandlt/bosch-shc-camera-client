@@ -15,9 +15,12 @@ Status: early extraction in progress. Not yet feature-complete versus the inline
 - HTTP Digest authentication (RFC 7616/2617) — `auth_utils.async_digest_request`.
 - RCP (Remote Configuration Protocol) via cloud proxy and direct LOCAL (`rcp` module): session
   management with TTL caching, binary protocol reads, direct-LOCAL Gen2 reads/writes (privacy mode,
-  front-light brightness), and response parsers (alarm catalog, motion zones/coords, TLS cert info,
-  network services, IVA analytics catalog). All session/SSL-context objects are caller-injected — this
-  module never builds or caches HA-specific process-wide state itself.
+  front-light brightness), response parsers (alarm catalog, motion zones/coords, TLS cert info,
+  network services, IVA analytics catalog), and `fetch_rcp_camera_data()` — a pure per-camera
+  orchestrator that reads all of the above in one call and returns an `RcpCameraData` dataclass (only
+  fields whose reads succeeded are populated; the rest stay `None`, meaning "not read this round").
+  All session/SSL-context objects are caller-injected — this module never builds or caches
+  HA-specific process-wide state itself, and never touches any coordinator/cache-dict state.
 - Bosch cloud API (`residential.cbs.boschsecurity.com`) write endpoints: privacy mode, camera light,
   notifications, pan — **planned**, not yet extracted. These need a session-injection + cache-redesign
   refactor (some hold cross-call business state — a lighting-switch response cache, a last-brightness

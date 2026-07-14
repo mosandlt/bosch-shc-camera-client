@@ -1,5 +1,20 @@
 # Changelog
 
+## [v0.5.0] - 2026-07-14
+
+Added `RcpCameraData` (dataclass) and `fetch_rcp_camera_data()` to `rcp.py` — the RCP
+camera-data-fetch orchestration (LED dimmer, privacy state, clock offset, LAN IP, product name,
+bitrate ladder, alarm catalog, motion zones/coords, TLS cert, network services, IVA analytics
+catalog), refactored out of the source integration's `async_update_rcp_data` as a pure function:
+takes an already-open session/ssl-context and a per-camera failure-counter dict, returns a
+`RcpCameraData` with only the fields whose reads succeeded populated (others `None`, meaning "not
+read this round" — the caller decides what to do with that, e.g. leave its own cache untouched).
+No coordinator/cache-dict coupling at all now; the source integration's `async_update_rcp_data`
+becomes a thin wrapper that builds the session/ssl-context and merges the result into its own 11
+cache dicts.
+
+105 new tests, 100% line+branch coverage maintained across all 4 modules.
+
 ## [v0.4.0] - 2026-07-14
 
 Extracted the RCP (Remote Configuration Protocol) session/protocol layer from `rcp.py`: cloud-proxy

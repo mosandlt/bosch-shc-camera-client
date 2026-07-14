@@ -50,6 +50,7 @@ import pytest
 
 from bosch_shc_camera_client import rcp as rcp_module
 from bosch_shc_camera_client.rcp import (
+    RcpCameraData,
     _is_xml_envelope,
     _parse_alarm_catalog,
     _parse_iva_catalog,
@@ -57,6 +58,7 @@ from bosch_shc_camera_client.rcp import (
     _parse_motion_zones,
     _parse_network_services,
     _parse_tls_cert,
+    fetch_rcp_camera_data,
     get_cached_rcp_session,
     rcp_local_read,
     rcp_local_read_privacy,
@@ -2303,3 +2305,755 @@ class TestDefensiveBreakBranches:
         zones = _parse_motion_coords(raw)
         assert len(zones) == 1
         assert zones[0] == {"x1": 0.0, "y1": 0.0, "x2": 50.0, "y2": 50.0}
+
+
+# ── fetch_rcp_camera_data / RcpCameraData ────────────────────────────────────
+#
+# fetch_rcp_camera_data is a refactor of the HA integration's coordinator-side
+# async_update_rcp_data (custom_components/bosch_shc_camera/rcp.py,
+# tests/test_rcp.py in that repo) — same 12-command read sequence, same
+# 3-strikes cmd_failures skip logic, same per-command guards (XML-envelope
+# detection, out-of-range sanity checks, truthy-but-too-short payloads), but
+# purely functional: no coordinator/cache-dict side effects, just a returned
+# RcpCameraData with only the successfully-read fields populated.
+#
+# Below ports the SCENARIOS from that source file (not its coordinator-stub
+# mocking mechanics) — call fetch_rcp_camera_data directly and assert on the
+# returned dataclass.
+
+FETCH_CAM_ID = "11111111-1111-1111-1111-111111111111"
+
+
+def _make_reader(read_map: dict) -> object:
+    """Build an async side_effect for `rcp_read` keyed on the `command` arg.
+
+    A value that is a `BaseException` instance is raised instead of
+    returned, so a single read_map can drive both success and exception
+    scenarios. Commands not present in `read_map` return None.
+    """
+
+    async def _reader(
+        session: object,
+        rcp_base: str,
+        command: str,
+        sessionid: str,
+        type_: str = "P_OCTET",
+        num: int = 0,
+        session_cache: object = None,
+    ) -> object:
+        val = read_map.get(command)
+        if isinstance(val, BaseException):
+            raise val
+        return val
+
+    return _reader
+
+
+async def _call_fetch(
+    read_map: dict,
+    cmd_failures: dict | None = None,
+    session_id: object = "fake-sid",
+) -> tuple:
+    """Patch get_cached_rcp_session + rcp_read and call fetch_rcp_camera_data.
+
+    `cmd_failures`, if given, is passed through by reference (not copied) so
+    callers can assert on its post-call mutated state.
+    """
+    failures = cmd_failures if cmd_failures is not None else {}
+    mock_read = AsyncMock(side_effect=_make_reader(read_map))
+    with (
+        patch(
+            f"{MODULE}.get_cached_rcp_session",
+            new_callable=AsyncMock,
+            return_value=session_id,
+        ),
+        patch(f"{MODULE}.rcp_read", mock_read),
+    ):
+        result = await fetch_rcp_camera_data(
+            _make_session(),
+            _fake_ssl_context(),
+            {},
+            {},
+            failures,
+            FETCH_CAM_ID,
+            PROXY_HOST,
+            PROXY_HASH,
+        )
+    return result, mock_read
+
+
+class TestFetchRcpCameraDataNoSession:
+    """No RCP session could be opened -> None, zero reads attempted."""
+
+    @pytest.mark.asyncio
+    async def test_no_session_returns_none_and_skips_all_reads(self) -> None:
+        result, mock_read = await _call_fetch({}, session_id=None)
+
+        assert result is None
+        mock_read.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_string_session_id_also_treated_as_no_session(self) -> None:
+        """`if not session_id:` also rejects a falsy non-None session id."""
+        result, mock_read = await _call_fetch({}, session_id="")
+
+        assert result is None
+        mock_read.assert_not_called()
+
+
+class TestFetchRcpCameraDataDimmer:
+    """0x0c22 LED dimmer -> T_WORD, num=1 -> integer 0-100."""
+
+    @pytest.mark.asyncio
+    async def test_valid_dimmer_cached(self) -> None:
+        raw = struct.pack(">H", 75)
+        result, _mock_read = await _call_fetch({"0x0c22": raw})
+
+        assert result is not None
+        assert result.dimmer == 75
+
+    @pytest.mark.asyncio
+    async def test_out_of_range_dimmer_not_cached(self) -> None:
+        """300 is outside 0-100 -> not cached (out-of-range branch, not the
+        XML-envelope branch — unlike Gen2's real 0x0A0A=2570 value, whose raw
+        bytes b'\\n\\n' are pure whitespace and hit the XML guard instead;
+        that case is covered separately by test_xml_envelope_not_cached)."""
+        raw = struct.pack(">H", 300)
+        result, _mock_read = await _call_fetch({"0x0c22": raw})
+
+        assert result is not None
+        assert result.dimmer is None
+
+    @pytest.mark.asyncio
+    async def test_xml_envelope_not_cached(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0c22": b"\n\n"})
+
+        assert result is not None
+        assert result.dimmer is None
+
+    @pytest.mark.asyncio
+    async def test_truthy_too_short_not_cached(self) -> None:
+        """1 byte — truthy, non-XML, but shorter than the expected 2 bytes."""
+        result, _mock_read = await _call_fetch({"0x0c22": b"\x01"})
+
+        assert result is not None
+        assert result.dimmer is None
+
+    @pytest.mark.asyncio
+    async def test_exception_handled_gracefully(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0c22": RuntimeError("boom")})
+
+        assert result is not None
+        assert result.dimmer is None
+
+
+class TestFetchRcpCameraDataPrivacy:
+    """0x0d00 privacy mask -> P_OCTET 4B -> byte[1] == 1 means ON."""
+
+    @pytest.mark.asyncio
+    async def test_privacy_on_byte1_eq_1(self) -> None:
+        raw = bytes([0x00, 0x01, 0x00, 0x00])
+        result, _mock_read = await _call_fetch({"0x0d00": raw})
+
+        assert result is not None
+        assert result.privacy == 1
+
+    @pytest.mark.asyncio
+    async def test_privacy_off_byte1_eq_0(self) -> None:
+        raw = bytes([0x00, 0x00, 0x00, 0x00])
+        result, _mock_read = await _call_fetch({"0x0d00": raw})
+
+        assert result is not None
+        assert result.privacy == 0
+
+    @pytest.mark.asyncio
+    async def test_xml_envelope_not_cached(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0d00": b"\n\n"})
+
+        assert result is not None
+        assert result.privacy is None
+
+    @pytest.mark.asyncio
+    async def test_truthy_too_short_not_cached(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0d00": b"\x01"})
+
+        assert result is not None
+        assert result.privacy is None
+
+    @pytest.mark.asyncio
+    async def test_exception_handled_gracefully(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0d00": RuntimeError("privacy boom")})
+
+        assert result is not None
+        assert result.privacy is None
+
+
+class TestFetchRcpCameraDataClock:
+    """0x0a0f camera clock -> 8 bytes -> offset vs server time."""
+
+    @pytest.mark.asyncio
+    async def test_valid_clock_caches_offset(self) -> None:
+        raw_clock = struct.pack(">HBBBBBB", 2026, 5, 12, 12, 0, 0, 1)
+        result, _mock_read = await _call_fetch({"0x0a0f": raw_clock})
+
+        assert result is not None
+        assert isinstance(result.clock_offset, float)
+
+    @pytest.mark.asyncio
+    async def test_month_13_unexpected_layout_not_cached(self) -> None:
+        """month=13 fails per-field validation -> 'unexpected layout' branch."""
+        raw_clock = struct.pack(">HBBBBBB", 2026, 13, 1, 12, 0, 0, 0)
+        result, _mock_read = await _call_fetch({"0x0a0f": raw_clock})
+
+        assert result is not None
+        assert result.clock_offset is None
+
+    @pytest.mark.asyncio
+    async def test_day_32_unexpected_layout_not_cached(self) -> None:
+        raw_clock = struct.pack(">HBBBBBB", 2026, 1, 32, 12, 0, 0, 0)
+        result, _mock_read = await _call_fetch({"0x0a0f": raw_clock})
+
+        assert result is not None
+        assert result.clock_offset is None
+
+    @pytest.mark.asyncio
+    async def test_hour_25_unexpected_layout_not_cached(self) -> None:
+        raw_clock = struct.pack(">HBBBBBB", 2026, 1, 1, 25, 0, 0, 0)
+        result, _mock_read = await _call_fetch({"0x0a0f": raw_clock})
+
+        assert result is not None
+        assert result.clock_offset is None
+
+    @pytest.mark.asyncio
+    async def test_invalid_calendar_date_marks_fail(self) -> None:
+        """Feb 30 — every per-field range passes but it isn't a real date;
+        `datetime(...)` raises ValueError -> caught by the inner try/except,
+        not the outer broad except."""
+        bad_clock = struct.pack(">HBBBBBB", 2026, 2, 30, 12, 0, 0, 0)
+        result, _mock_read = await _call_fetch({"0x0a0f": bad_clock})
+
+        assert result is not None
+        assert result.clock_offset is None
+
+    @pytest.mark.asyncio
+    async def test_xml_envelope_not_cached(self) -> None:
+        xml_bytes = b"\n\n<rcp>\n\n\t<command>0x0a0f</command>\n</rcp>"
+        result, _mock_read = await _call_fetch({"0x0a0f": xml_bytes})
+
+        assert result is not None
+        assert result.clock_offset is None
+
+    @pytest.mark.asyncio
+    async def test_raw_none_not_cached(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0a0f": None})
+
+        assert result is not None
+        assert result.clock_offset is None
+
+    @pytest.mark.asyncio
+    async def test_truthy_too_short_not_cached(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0a0f": b"\x00\x01\x02\x03"})
+
+        assert result is not None
+        assert result.clock_offset is None
+
+    @pytest.mark.asyncio
+    async def test_exception_handled_gracefully(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0a0f": RuntimeError("clock boom")})
+
+        assert result is not None
+        assert result.clock_offset is None
+
+
+class TestFetchRcpCameraDataLanIp:
+    """0x0a36 LAN IP -> 4-byte binary or null-terminated ASCII."""
+
+    @pytest.mark.asyncio
+    async def test_4_byte_binary_ip(self) -> None:
+        ip_bytes = bytes([10, 0, 0, 5])
+        result, _mock_read = await _call_fetch({"0x0a36": ip_bytes})
+
+        assert result is not None
+        assert result.lan_ip == "10.0.0.5"
+
+    @pytest.mark.asyncio
+    async def test_ascii_ip_string(self) -> None:
+        ip_bytes = b"192.0.2.100\x00"
+        result, _mock_read = await _call_fetch({"0x0a36": ip_bytes})
+
+        assert result is not None
+        assert result.lan_ip == "192.0.2.100"
+
+    @pytest.mark.asyncio
+    async def test_xml_wrapped_payload_not_cached(self) -> None:
+        """Nested XML doc -> decoded string starts with '<' -> rejected."""
+        xml_bytes = b"<rcp><payload>00000000</payload></rcp>"
+        result, _mock_read = await _call_fetch({"0x0a36": xml_bytes})
+
+        assert result is not None
+        assert result.lan_ip is None
+
+    @pytest.mark.asyncio
+    async def test_zero_ip_rejected(self) -> None:
+        ip_bytes = bytes([0, 0, 0, 0])
+        result, _mock_read = await _call_fetch({"0x0a36": ip_bytes})
+
+        assert result is not None
+        assert result.lan_ip is None
+
+    @pytest.mark.asyncio
+    async def test_raw_none_marks_fail(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0a36": None})
+
+        assert result is not None
+        assert result.lan_ip is None
+
+    @pytest.mark.asyncio
+    async def test_empty_bytes_neither_branch(self) -> None:
+        """raw = b'' is falsy but not None -> neither `if raw:` nor
+        `elif raw is None:` fires -> no crash, field stays unset."""
+        result, _mock_read = await _call_fetch({"0x0a36": b""})
+
+        assert result is not None
+        assert result.lan_ip is None
+
+    @pytest.mark.asyncio
+    async def test_exception_handled_gracefully(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0a36": RuntimeError("lan ip boom")})
+
+        assert result is not None
+        assert result.lan_ip is None
+
+
+class TestFetchRcpCameraDataProductName:
+    """0x0aea product name -> null-terminated ASCII."""
+
+    @pytest.mark.asyncio
+    async def test_gen2_outdoor_product_name_cached(self) -> None:
+        raw_name = b"FLEXIDOME IP starlight 8000i\x00\x00\x00"
+        result, _mock_read = await _call_fetch({"0x0aea": raw_name})
+
+        assert result is not None
+        assert result.product_name == "FLEXIDOME IP starlight 8000i"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_trimmed_before_cache(self) -> None:
+        raw_name = b"  CAMERA_360  \x00"
+        result, _mock_read = await _call_fetch({"0x0aea": raw_name})
+
+        assert result is not None
+        assert result.product_name == "CAMERA_360"
+
+    @pytest.mark.asyncio
+    async def test_xml_wrapped_product_name_skipped(self) -> None:
+        xml_blob = b"<rcp><payload>0000</payload></rcp>"
+        result, _mock_read = await _call_fetch({"0x0aea": xml_blob})
+
+        assert result is not None
+        assert result.product_name is None
+
+    @pytest.mark.asyncio
+    async def test_null_only_payload_empty_after_strip_skipped(self) -> None:
+        """Decodes to an empty string after rstrip/strip -> falsy `name_str`."""
+        result, _mock_read = await _call_fetch({"0x0aea": b"\x00\x00\x00"})
+
+        assert result is not None
+        assert result.product_name is None
+
+    @pytest.mark.asyncio
+    async def test_raw_none_marks_fail(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0aea": None})
+
+        assert result is not None
+        assert result.product_name is None
+
+    @pytest.mark.asyncio
+    async def test_empty_bytes_neither_branch(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0aea": b""})
+
+        assert result is not None
+        assert result.product_name is None
+
+    @pytest.mark.asyncio
+    async def test_exception_handled_gracefully(self) -> None:
+        result, _mock_read = await _call_fetch(
+            {"0x0aea": RuntimeError("product name boom")}
+        )
+
+        assert result is not None
+        assert result.product_name is None
+
+
+class TestFetchRcpCameraDataBitrate:
+    """0x0c81 bitrate ladder -> series of big-endian uint32 kbps values."""
+
+    @pytest.mark.asyncio
+    async def test_bitrate_ladder_parsed(self) -> None:
+        bitrate_bytes = struct.pack(">II", 1000, 2000)
+        result, _mock_read = await _call_fetch({"0x0c81": bitrate_bytes})
+
+        assert result is not None
+        assert result.bitrate == [1000, 2000]
+
+    @pytest.mark.asyncio
+    async def test_out_of_range_bitrate_skips_cache(self) -> None:
+        bad_bitrate = struct.pack(">I", 999999)
+        result, _mock_read = await _call_fetch({"0x0c81": bad_bitrate})
+
+        assert result is not None
+        assert result.bitrate is None
+
+    @pytest.mark.asyncio
+    async def test_xml_envelope_not_cached(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0c81": b"\n\n"})
+
+        assert result is not None
+        assert result.bitrate is None
+
+    @pytest.mark.asyncio
+    async def test_truthy_too_short_not_cached(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0c81": b"\x00\x01"})
+
+        assert result is not None
+        assert result.bitrate is None
+
+    @pytest.mark.asyncio
+    async def test_exception_handled_gracefully(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0c81": RuntimeError("bitrate boom")})
+
+        assert result is not None
+        assert result.bitrate is None
+
+
+class TestFetchRcpCameraDataAlarmCatalog:
+    """0x0c38 alarm catalog -- UTF-16-BE, ~1366 bytes."""
+
+    @staticmethod
+    def _make_alarm_blob(names: list) -> bytes:
+        return ("\x00".join(names) + "\x00").encode("utf-16-be")
+
+    @pytest.mark.asyncio
+    async def test_alarm_catalog_cached(self) -> None:
+        names = ["Virtual Alarm 0", "Flame detected", "Motion detected"]
+        raw = self._make_alarm_blob(names)
+        assert len(raw) > 10
+
+        result, _mock_read = await _call_fetch({"0x0c38": raw})
+
+        assert result is not None
+        assert result.alarm_catalog is not None
+        assert len(result.alarm_catalog) == len(names)
+
+    @pytest.mark.asyncio
+    async def test_short_payload_below_threshold_no_cache(self) -> None:
+        raw = b"\x00" * 8
+        result, _mock_read = await _call_fetch({"0x0c38": raw})
+
+        assert result is not None
+        assert result.alarm_catalog is None
+
+    @pytest.mark.asyncio
+    async def test_xml_envelope_not_cached(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0c38": b"\n\n"})
+
+        assert result is not None
+        assert result.alarm_catalog is None
+
+    @pytest.mark.asyncio
+    async def test_exception_handled_gracefully(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0c38": RuntimeError("catalog boom")})
+
+        assert result is not None
+        assert result.alarm_catalog is None
+
+
+class TestFetchRcpCameraDataMotionZones:
+    """0x0c00 motion detection zones -- 5 zones x 28 bytes. No XML guard
+    (per the source comment, this command predates the XML-envelope fix)."""
+
+    @pytest.mark.asyncio
+    async def test_valid_28_byte_payload_caches_zones(self) -> None:
+        one_zone = b"\x01" + b"\x00" * 27
+        result, _mock_read = await _call_fetch({"0x0c00": one_zone})
+
+        assert result is not None
+        assert result.motion_zones is not None
+        assert len(result.motion_zones) == 1
+        assert result.motion_zones[0]["zone_id"] == 0
+
+    @pytest.mark.asyncio
+    async def test_short_payload_under_28_bytes_no_cache(self) -> None:
+        """Truthy but < 28 bytes -> neither `if raw and len>=28` nor
+        `elif raw is None` fires -> no cache, no crash."""
+        short_raw = b"\x00" * 20
+        result, _mock_read = await _call_fetch({"0x0c00": short_raw})
+
+        assert result is not None
+        assert result.motion_zones is None
+
+    @pytest.mark.asyncio
+    async def test_raw_none_marks_fail(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0c00": None})
+
+        assert result is not None
+        assert result.motion_zones is None
+
+    @pytest.mark.asyncio
+    async def test_exception_handled_gracefully(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0c00": RuntimeError("zones boom")})
+
+        assert result is not None
+        assert result.motion_zones is None
+
+
+class TestFetchRcpCameraDataMotionCoords:
+    """0x0c0a motion zone coordinates -- int32 normalized +-1.0 as x2^31."""
+
+    @pytest.mark.asyncio
+    async def test_motion_coords_cached(self) -> None:
+        raw_coords = struct.pack(">HHHH", 0, 0, 10000, 10000) + struct.pack(
+            ">HHHH", 2500, 2500, 7500, 7500
+        )
+        assert len(raw_coords) >= 16
+
+        result, _mock_read = await _call_fetch({"0x0c0a": raw_coords})
+
+        assert result is not None
+        assert result.motion_coords is not None
+        assert len(result.motion_coords) == 2
+        assert result.motion_coords[0] == {
+            "x1": 0.0,
+            "y1": 0.0,
+            "x2": 100.0,
+            "y2": 100.0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_xml_envelope_marks_fail(self) -> None:
+        xml_bytes = b"\n\n<rcp>\n\n\t<command>0x0c0a</command>\n</rcp>"
+        result, _mock_read = await _call_fetch({"0x0c0a": xml_bytes})
+
+        assert result is not None
+        assert result.motion_coords is None
+
+    @pytest.mark.asyncio
+    async def test_too_short_or_none_marks_fail(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0c0a": None})
+
+        assert result is not None
+        assert result.motion_coords is None
+
+    @pytest.mark.asyncio
+    async def test_exception_handled_gracefully(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0c0a": RuntimeError("coords boom")})
+
+        assert result is not None
+        assert result.motion_coords is None
+
+
+class TestFetchRcpCameraDataTlsCert:
+    """0x0b91 TLS certificate -- DER X.509, ~455 bytes. No XML guard."""
+
+    @pytest.mark.asyncio
+    async def test_tls_cert_cached_when_data_present(self) -> None:
+        fake_cert = b"\x30\x82" + b"\xff" * 58
+        result, _mock_read = await _call_fetch({"0x0b91": fake_cert})
+
+        assert result is not None
+        assert result.tls_cert is not None
+        assert "raw_size" in result.tls_cert
+
+    @pytest.mark.asyncio
+    async def test_raw_none_marks_fail(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0b91": None})
+
+        assert result is not None
+        assert result.tls_cert is None
+
+    @pytest.mark.asyncio
+    async def test_truthy_too_short_neither_branch(self) -> None:
+        """Truthy but <= 50 bytes -> neither `if raw and len>50` nor
+        `elif raw is None` fires."""
+        result, _mock_read = await _call_fetch({"0x0b91": b"\x00" * 10})
+
+        assert result is not None
+        assert result.tls_cert is None
+
+    @pytest.mark.asyncio
+    async def test_exception_handled_gracefully(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0b91": RuntimeError("tls boom")})
+
+        assert result is not None
+        assert result.tls_cert is None
+
+
+class TestFetchRcpCameraDataNetworkServices:
+    """0x0c62 network services -- TLV list, ~469 bytes."""
+
+    @pytest.mark.asyncio
+    async def test_valid_payload_caches_services(self) -> None:
+        network_raw = b"HTTP\x00HTTPS\x00RTSP\x00"
+        assert len(network_raw) > 10
+        assert not network_raw.startswith(b"<")
+
+        result, _mock_read = await _call_fetch({"0x0c62": network_raw})
+
+        assert result is not None
+        assert result.network_services is not None
+        assert "HTTP" in result.network_services
+
+    @pytest.mark.asyncio
+    async def test_xml_payload_skips_cache(self) -> None:
+        xml_raw = b"<rcp>" + b"x" * 50
+        result, _mock_read = await _call_fetch({"0x0c62": xml_raw})
+
+        assert result is not None
+        assert result.network_services is None
+
+    @pytest.mark.asyncio
+    async def test_whitespace_prefixed_xml_envelope_rejected(self) -> None:
+        whitespace_prefixed_xml = b"\n\n<rcp><payload>aabbcc</payload></rcp>"
+        result, _mock_read = await _call_fetch({"0x0c62": whitespace_prefixed_xml})
+
+        assert result is not None
+        assert result.network_services is None
+
+    @pytest.mark.asyncio
+    async def test_short_payload_below_threshold_no_cache(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0c62": b"\x00" * 8})
+
+        assert result is not None
+        assert result.network_services is None
+
+    @pytest.mark.asyncio
+    async def test_exception_handled_gracefully(self) -> None:
+        result, _mock_read = await _call_fetch(
+            {"0x0c62": RuntimeError("network services boom")}
+        )
+
+        assert result is not None
+        assert result.network_services is None
+
+
+class TestFetchRcpCameraDataIvaCatalog:
+    """0x0b60 IVA analytics catalog -- 65 entries x 6B."""
+
+    @pytest.mark.asyncio
+    async def test_iva_catalog_cached(self) -> None:
+        entry1 = struct.pack(">HHH", 1, 0x0100, 0x0001)
+        entry2 = struct.pack(">HHH", 2, 0x0200, 0x0000)
+        raw_iva = entry1 + entry2
+
+        result, _mock_read = await _call_fetch({"0x0b60": raw_iva})
+
+        assert result is not None
+        assert result.iva_catalog is not None
+        assert any(m["module_id"] == 1 and m["active"] for m in result.iva_catalog)
+        assert any(m["module_id"] == 2 and not m["active"] for m in result.iva_catalog)
+
+    @pytest.mark.asyncio
+    async def test_xml_envelope_marks_fail(self) -> None:
+        xml_bytes = b"\n\n<rcp>\n\n\t<command>0x0b60</command>\n</rcp>"
+        result, _mock_read = await _call_fetch({"0x0b60": xml_bytes})
+
+        assert result is not None
+        assert result.iva_catalog is None
+
+    @pytest.mark.asyncio
+    async def test_short_payload_no_cache(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0b60": b"\x00\x01\x02"})
+
+        assert result is not None
+        assert result.iva_catalog is None
+
+    @pytest.mark.asyncio
+    async def test_exception_handled_gracefully(self) -> None:
+        result, _mock_read = await _call_fetch({"0x0b60": RuntimeError("iva boom")})
+
+        assert result is not None
+        assert result.iva_catalog is None
+
+
+class TestFetchRcpCameraDataSkipGuard:
+    """cmd_failures 3-strikes suppression, pinned across all 12 commands."""
+
+    ALL_COMMANDS = (
+        "0x0c22",
+        "0x0d00",
+        "0x0a0f",
+        "0x0a36",
+        "0x0aea",
+        "0x0c81",
+        "0x0c38",
+        "0x0c00",
+        "0x0c0a",
+        "0x0b91",
+        "0x0c62",
+        "0x0b60",
+    )
+
+    @pytest.mark.asyncio
+    async def test_all_commands_skipped_after_3_failures(self) -> None:
+        """Every command already at 3 consecutive failures -> a further call
+        skips ALL 12 reads entirely (was previously an unguarded retry for
+        some of these commands) and returns an all-default RcpCameraData."""
+        cmd_failures = {cmd: 3 for cmd in self.ALL_COMMANDS}
+
+        result, mock_read = await _call_fetch({}, cmd_failures=cmd_failures)
+
+        assert result is not None
+        mock_read.assert_not_called()
+        assert result == RcpCameraData()
+
+    @pytest.mark.asyncio
+    async def test_command_not_skipped_at_2_failures(self) -> None:
+        """2 failures — still below the 3-strike threshold, still attempted."""
+        cmd_failures = {"0x0c22": 2}
+        raw = struct.pack(">H", 42)
+
+        result, mock_read = await _call_fetch(
+            {"0x0c22": raw}, cmd_failures=cmd_failures
+        )
+
+        assert result is not None
+        assert result.dimmer == 42
+        called_cmds = [call.args[2] for call in mock_read.call_args_list]
+        assert "0x0c22" in called_cmds
+
+
+class TestFetchRcpCameraDataCmdFailuresLifecycle:
+    """A single success pops the per-command counter; a 3rd consecutive
+    failure crosses the log-threshold branch inside `_mark_fail`."""
+
+    @pytest.mark.asyncio
+    async def test_success_resets_failure_counter(self) -> None:
+        cmd_failures = {"0x0c22": 2}
+        raw = struct.pack(">H", 42)
+
+        await _call_fetch({"0x0c22": raw}, cmd_failures=cmd_failures)
+
+        assert "0x0c22" not in cmd_failures
+
+    @pytest.mark.asyncio
+    async def test_third_consecutive_failure_reaches_threshold(self) -> None:
+        """2 pre-existing failures + 1 more (raw=None) -> counter hits
+        exactly 3, exercising `_mark_fail`'s `if cmd_failures[cmd] == 3:`
+        True branch (one-time debug log)."""
+        cmd_failures = {"0x0c22": 2}
+
+        result, _mock_read = await _call_fetch(
+            {"0x0c22": None}, cmd_failures=cmd_failures
+        )
+
+        assert result is not None
+        assert result.dimmer is None
+        assert cmd_failures["0x0c22"] == 3
+
+    @pytest.mark.asyncio
+    async def test_first_failure_does_not_reach_threshold(self) -> None:
+        """Starting from 0 -> 1 failure, well below the ==3 log branch."""
+        cmd_failures: dict = {}
+
+        await _call_fetch({"0x0c22": None}, cmd_failures=cmd_failures)
+
+        assert cmd_failures["0x0c22"] == 1
