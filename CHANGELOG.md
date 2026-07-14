@@ -1,5 +1,18 @@
 # Changelog
 
+## [v0.5.1] - 2026-07-14
+
+Added `cloud.py`: `cloud_put_json()`, the single shared HTTP pattern duplicated across the source
+integration's 5 cloud-setter functions (privacy/light/light_component/notifications/pan) — build
+Bearer-auth headers, PUT a JSON body with a timeout, classify the HTTP status (200/201/204 = ok),
+optionally parse a 200 response body. Returns a `CloudPutResult` dataclass. Deliberately narrow scope:
+the actual multi-tier fallback orchestration (cloud → local RCP → SHC local API), coordinator cache
+writes, and notification side effects are NOT extracted — that's genuinely coordinator-specific business
+logic, not wire protocol, and stays in the source integration (see
+`knowledge-base/ha-core-submission-plan.md` for the "clean boundary" scoping decision).
+
+29 new tests, 100% line+branch coverage maintained across all 5 modules.
+
 ## [v0.5.0] - 2026-07-14
 
 Added `RcpCameraData` (dataclass) and `fetch_rcp_camera_data()` to `rcp.py` — the RCP
