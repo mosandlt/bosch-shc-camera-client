@@ -1,5 +1,24 @@
 # Changelog
 
+## [v0.4.0] - 2026-07-14
+
+Extracted the RCP (Remote Configuration Protocol) session/protocol layer from `rcp.py`: cloud-proxy
+session management (`get_cached_rcp_session`, `rcp_session`, `rcp_read`), direct-LOCAL Gen2 RCP
+(`rcp_local_read`, `rcp_local_write`, `rcp_local_read_privacy`, `rcp_local_write_privacy`,
+`rcp_local_write_front_light`), and all 6 binary-response parsers (`_parse_alarm_catalog`,
+`_parse_motion_zones`, `_parse_motion_coords`, `_parse_tls_cert`, `_parse_network_services`,
+`_parse_iva_catalog`) plus `_is_xml_envelope`. Functions that took `hass`/`coordinator` purely to reach a
+session or SSL context now take `aiohttp.ClientSession`/`ssl.SSLContext` directly. Not extracted:
+`async_update_rcp_data`, the coordinator-cache-writing orchestration (11 cache dicts + a failure
+counter) — genuinely HA-integration-specific, stays in the source repo (tracked as a separate
+cache-redesign task).
+
+Added a `[[tool.mypy.overrides]]` for `cryptography.*` (optional, lazily-imported dependency for
+`_parse_tls_cert`'s DER-certificate parsing, with a raw-hex fallback when absent) so mypy behavior is
+deterministic regardless of whether the package happens to be installed — CI never installs it.
+
+212 new tests (`tests/test_rcp.py`), 100% line+branch coverage maintained across all 4 modules.
+
 ## [v0.3.0] - 2026-07-14
 
 Extracted `auth_utils.py` (HTTP Digest authentication, RFC 7616/2617) from the Home Assistant
