@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bosch-shc-camera-client"
-version = "0.5.3"
+version = "0.5.4"
 description = "Async Python client library for Bosch Smart Home Camera cloud + local (RCP) APIs."
 readme = "README.md"
 license = { file = "LICENSE" }

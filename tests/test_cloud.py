@@ -9,6 +9,7 @@ coordinator caches, notifications) stays in the source integration.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
@@ -20,7 +21,7 @@ URL = "https://residential.cbs.boschsecurity.com/v11/video_inputs/cam1/privacy"
 
 
 def _make_session(
-    status: int, json_data: dict | None = None, text: str = ""
+    status: int, json_data: Any | None = None, text: str = ""
 ) -> MagicMock:
     """Build a mock session. `json_data=None` simulates a response with no
     parseable JSON body (e.g. a real HTTP 204's empty body) -- `resp.json()`
@@ -78,11 +79,22 @@ class TestCloudPutJsonSuccess:
         }
 
     @pytest.mark.asyncio
-    async def test_200_with_unparseable_body_falls_back_to_none(self):
+    async def test_200_with_unparsable_body_falls_back_to_none(self):
         session = _make_session(200)
         result = await cloud_put_json(session, "tok", URL, {})
         assert result.ok is True
         assert result.status == 200
+        assert result.body is None
+
+    @pytest.mark.asyncio
+    async def test_200_with_non_dict_json_falls_back_to_none(self):
+        """A bare JSON array (or any non-object payload) is treated as
+        unparsable, not stored as-is -- callers rely on `.body` being a
+        dict-or-None so they can call `.get()` without their own isinstance
+        check."""
+        session = _make_session(200, ["unexpected", "array"])
+        result = await cloud_put_json(session, "tok", URL, {})
+        assert result.ok is True
         assert result.body is None
 
     @pytest.mark.asyncio

@@ -1,5 +1,20 @@
 # Changelog
 
+## [v0.5.4] - 2026-07-14
+
+Two fixes found by an independent bug-hunt pass on the source integration's rewired cloud setters:
+
+- `cloud_put_json`'s internal failure log dropped from WARNING to DEBUG. Every caller in the source
+  integration already logs its own WARNING with richer context (camera id, which of several parallel
+  endpoints failed, etc.) once it sees `ok=False` — the library logging its own WARNING for the same
+  failure was pure duplicate noise, doubling every failed-write log line.
+- `CloudPutResult.body` is now genuinely guaranteed `dict | None`, not just by type-hint convention — a
+  non-object JSON response (e.g. a bare array) is now discarded instead of stored as-is. Closes a latent
+  `AttributeError` risk: a caller doing `result.body.get(...)` (e.g. the pan setter) would have crashed
+  on a non-dict body with no `isinstance` guard of its own.
+
+3 new tests, 100% line+branch coverage maintained across all 5 modules.
+
 ## [v0.5.3] - 2026-07-14
 
 Fixed `cloud_put_json`'s JSON-parse attempt: was gated on `status == 200` specifically, but the source

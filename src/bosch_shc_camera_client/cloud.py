@@ -56,7 +56,16 @@ async def cloud_put_json(
     `text` is the raw response text whenever a real HTTP response was
     received (any status, not just success) — useful for logging the API's
     own error message on a non-2xx response (e.g. Bosch's 400 body explains
-    exactly which field was rejected and why).
+    exactly which field was rejected and why). `body` is only ever a `dict`
+    or `None` — a non-object JSON response (e.g. a bare array) is treated as
+    unparsable and discarded, so callers can safely call `.get()` on it
+    without an `isinstance` check of their own.
+
+    Failures are logged at DEBUG here, not WARNING — every caller in the
+    source integration already logs its own WARNING with richer context
+    (camera id, which of several endpoints, etc.) once it sees `ok=False`,
+    so a second WARNING at this layer would just be duplicate noise for the
+    same failure.
     """
     headers = {
         "Authorization": f"Bearer {token}",
@@ -75,12 +84,15 @@ async def cloud_put_json(
                     pass
                 if ok:
                     try:
-                        parsed = await resp.json()
+                        candidate = await resp.json()
                     except Exception:  # noqa: S110 # defensive JSON parse; write already sent, caller has a safe default
                         pass
+                    else:
+                        if isinstance(candidate, dict):
+                            parsed = candidate
                 if not ok:
-                    _LOGGER.warning("cloud_put_json: HTTP %d for %s", resp.status, url)
+                    _LOGGER.debug("cloud_put_json: HTTP %d for %s", resp.status, url)
                 return CloudPutResult(ok=ok, status=resp.status, body=parsed, text=text)
     except (TimeoutError, aiohttp.ClientError) as err:
-        _LOGGER.warning("cloud_put_json: error for %s: %s", url, err)
+        _LOGGER.debug("cloud_put_json: error for %s: %s", url, err)
         return CloudPutResult(ok=False, status=None, body=None, text=None)
