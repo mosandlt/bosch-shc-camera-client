@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.5.2] - 2026-07-14
+
+`CloudPutResult` gains a `text` field: the raw response body text, captured whenever a real HTTP
+response is received (any status, not just success). Needed for `shc.py`'s Gen1 light-component setter,
+which logs Bosch's own error-response body on a 400 (it names exactly which field was rejected, e.g.
+`frontIlluminatorIntensity must not be set if frontLightOn is false`) — losing that on extraction would
+have been a real diagnostic regression, not just a refactor.
+
+6 new tests, 100% line+branch coverage maintained across all 5 modules.
+
 ## [v0.5.1] - 2026-07-14
 
 Added `cloud.py`: `cloud_put_json()`, the single shared HTTP pattern duplicated across the source

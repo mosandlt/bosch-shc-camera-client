@@ -19,10 +19,13 @@ from bosch_shc_camera_client.cloud import CloudPutResult, cloud_put_json
 URL = "https://residential.cbs.boschsecurity.com/v11/video_inputs/cam1/privacy"
 
 
-def _make_session(status: int, json_data: dict | None = None) -> MagicMock:
+def _make_session(
+    status: int, json_data: dict | None = None, text: str = ""
+) -> MagicMock:
     resp = MagicMock()
     resp.status = status
     resp.json = AsyncMock(return_value=json_data or {})
+    resp.text = AsyncMock(return_value=text)
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=resp)
     cm.__aexit__ = AsyncMock(return_value=None)
@@ -36,7 +39,7 @@ class TestCloudPutJsonSuccess:
     async def test_204_is_ok_with_no_body(self):
         session = _make_session(204)
         result = await cloud_put_json(session, "tok", URL, {"privacyMode": "ON"})
-        assert result == CloudPutResult(ok=True, status=204, body=None)
+        assert result == CloudPutResult(ok=True, status=204, body=None, text="")
 
     @pytest.mark.asyncio
     async def test_201_is_ok_with_no_body(self):
@@ -80,6 +83,36 @@ class TestCloudPutJsonSuccess:
         assert kwargs["json"] == {"a": 1}
 
 
+class TestCloudPutJsonTextCapture:
+    @pytest.mark.asyncio
+    async def test_text_captured_on_success(self):
+        session = _make_session(204, text="")
+        result = await cloud_put_json(session, "tok", URL, {})
+        assert result.text == ""
+
+    @pytest.mark.asyncio
+    async def test_text_captured_on_400_for_diagnostics(self):
+        """Bosch's own error body explains exactly which field was rejected
+        (e.g. 'frontIlluminatorIntensity must not be set if frontLightOn is
+        false') -- callers need this even on a non-2xx response."""
+        session = _make_session(
+            400, text='{"error":"frontIlluminatorIntensity must not be set"}'
+        )
+        result = await cloud_put_json(session, "tok", URL, {})
+        assert result.ok is False
+        assert result.text == '{"error":"frontIlluminatorIntensity must not be set"}'
+
+    @pytest.mark.asyncio
+    async def test_unreadable_text_falls_back_to_none(self):
+        session = _make_session(204)
+        session.put.return_value.__aenter__.return_value.text = AsyncMock(
+            side_effect=ValueError("stream already consumed")
+        )
+        result = await cloud_put_json(session, "tok", URL, {})
+        assert result.ok is True
+        assert result.text is None
+
+
 class TestCloudPutJsonFailure:
     @pytest.mark.asyncio
     async def test_401_is_not_ok(self):
@@ -115,7 +148,7 @@ class TestCloudPutJsonFailure:
         session.put = MagicMock(return_value=cm)
 
         result = await cloud_put_json(session, "tok", URL, {})
-        assert result == CloudPutResult(ok=False, status=None, body=None)
+        assert result == CloudPutResult(ok=False, status=None, body=None, text=None)
 
     @pytest.mark.asyncio
     async def test_client_error_returns_ok_false_status_none(self):

@@ -32,6 +32,7 @@ class CloudPutResult:
     ok: bool
     status: int | None
     body: dict[str, Any] | None = None
+    text: str | None = None
 
 
 async def cloud_put_json(
@@ -50,6 +51,10 @@ async def cloud_put_json(
     already relied on). `body` is the parsed JSON response only when the
     caller gets one (HTTP 200 with a JSON payload) — most Bosch cloud PUTs
     respond 204 with no body, so this is commonly `None` even on success.
+    `text` is the raw response text whenever a real HTTP response was
+    received (any status, not just success) — useful for logging the API's
+    own error message on a non-2xx response (e.g. Bosch's 400 body explains
+    exactly which field was rejected and why).
     """
     headers = {
         "Authorization": f"Bearer {token}",
@@ -61,6 +66,11 @@ async def cloud_put_json(
             async with session.put(url, json=body, headers=headers) as resp:
                 ok = resp.status in _OK_STATUSES
                 parsed: dict[str, Any] | None = None
+                text: str | None = None
+                try:
+                    text = await resp.text()
+                except Exception:  # noqa: S110 # defensive text read; status already known, caller has a safe default
+                    pass
                 if ok and resp.status == 200:
                     try:
                         parsed = await resp.json()
@@ -68,7 +78,7 @@ async def cloud_put_json(
                         pass
                 if not ok:
                     _LOGGER.warning("cloud_put_json: HTTP %d for %s", resp.status, url)
-                return CloudPutResult(ok=ok, status=resp.status, body=parsed)
+                return CloudPutResult(ok=ok, status=resp.status, body=parsed, text=text)
     except (TimeoutError, aiohttp.ClientError) as err:
         _LOGGER.warning("cloud_put_json: error for %s: %s", url, err)
-        return CloudPutResult(ok=False, status=None, body=None)
+        return CloudPutResult(ok=False, status=None, body=None, text=None)
