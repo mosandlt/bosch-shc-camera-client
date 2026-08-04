@@ -26,6 +26,15 @@ Status: early extraction in progress. Not yet feature-complete versus the inline
   response parsing. This is the one shared piece extracted from the source integration's 5 cloud-setter
   functions (privacy/light/light_component/notifications/pan); deliberately narrow — see "Out of scope"
   below.
+- Local TCP→TLS proxy for camera RTSPS streams (`tls_proxy` module): an asyncio-native
+  (`asyncio.start_server()`) proxy that lets a plain RTSP client (FFmpeg/go2rtc) connect to
+  `rtsp://127.0.0.1:<port>` instead of dealing with the camera's self-signed TLS cert directly.
+  Server/state ownership lives entirely on caller-supplied `port_cache`/`server_cache` dicts — no
+  module-level listener state. Also includes `rtsp_keepalive`/`pre_warm_rtsp`/`confirm_encoder_ready`,
+  authenticated RTSP OPTIONS/DESCRIBE helpers used to keep a session alive and warm up the camera's
+  encoder before the real client connects. Calling `start_tls_proxy`/`stop_tls_proxy` needs a Python
+  3.13+ interpreter (`asyncio.Server.close_clients()`); importing the package on older Pythons is
+  unaffected as long as those functions aren't called.
 
 Out of scope (stays integration-specific, not extracted here, by deliberate "clean boundary" decision —
 see `knowledge-base/ha-core-submission-plan.md` in the source repo): the cloud setters' actual

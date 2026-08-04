@@ -1,5 +1,36 @@
 # Changelog
 
+## [v0.5.5] - 2026-08-04
+
+Add `tls_proxy` module: the source integration's asyncio-native TCP→TLS proxy
+(`asyncio.start_server()`-based) that lets FFmpeg/go2rtc connect to a plaintext
+`rtsp://127.0.0.1:<port>` instead of handling the camera's self-signed-cert TLS
++ Digest auth directly. Extracted byte-for-byte — the module had zero
+HA/coordinator coupling in the source repo to begin with, so this is a pure
+move, not a rewrite. Public API: `start_tls_proxy`/`stop_tls_proxy`/
+`stop_all_proxies` (server lifecycle over caller-supplied `port_cache`/
+`server_cache` dicts, so a caller's own shutdown path can tear everything down
+deterministically), `rtsp_keepalive`/`pre_warm_rtsp`/`confirm_encoder_ready`
+(authenticated RTSP OPTIONS/DESCRIBE helpers that keep a session alive past
+Bosch's 60s inactivity timeout and warm up the camera's H.264 encoder before
+FFmpeg connects).
+
+`[tool.mypy] python_version` bumped 3.12 → 3.13 (matches the source HA
+integration's own mypy pin) — `asyncio.Server.close_clients()` (used by the
+proxy's stop/circuit-breaker cleanup paths, Python 3.13+ stdlib) has no
+typeshed stub before 3.13. This only tightens this repo's own type-check
+target; `requires-python` stays `>=3.11` since importing the package (or any
+module besides `tls_proxy`) is unaffected — only actually calling
+`start_tls_proxy`/`stop_tls_proxy` needs a 3.13+ interpreter at runtime, same
+as the HA integration itself already requires.
+
+96 new tests (ported from the source repo's `tests/test_tls_proxy.py`, plus
+one added here to independently reach 100% branch coverage in this repo's own
+isolated suite — the source repo's equivalent branch, the debug-preview skip
+for `$`-prefixed RTP-interleaved frames, was covered there by a *different*,
+integration/chaos-facing test file that stayed behind), 100% line+branch
+coverage maintained across all 6 modules.
+
 ## [v0.5.4] - 2026-07-14
 
 Two fixes found by an independent bug-hunt pass on the source integration's rewired cloud setters:
