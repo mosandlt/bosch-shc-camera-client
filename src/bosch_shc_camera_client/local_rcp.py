@@ -116,7 +116,9 @@ def rcp_read_remote_sync(
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     try:
-        with urllib.request.urlopen(url, timeout=timeout, context=ctx) as r:  # noqa: S310 # local camera RCP endpoint, fixed https scheme, not user-supplied
+        with urllib.request.urlopen(
+            url, timeout=timeout, context=ctx
+        ) as r:  # local camera RCP endpoint, fixed https scheme, not user-supplied
             if r.status != 200:
                 _LOGGER.debug("rcp remote: %s %s → HTTP %d", command, type_, r.status)
                 return None
