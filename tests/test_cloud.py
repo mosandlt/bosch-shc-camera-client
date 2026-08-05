@@ -1,10 +1,17 @@
-"""Tests for cloud.py — shared Bosch cloud-API PUT mechanics.
+"""Tests for cloud.py — shared Bosch cloud-API PUT mechanics + pure setters.
 
-cloud_put_json is the single extracted piece of the source integration's
-5 cloud-setter functions (privacy/light/light_component/notifications/pan):
-build Bearer headers, PUT JSON with a timeout, classify the HTTP status,
-optionally parse the response body. Everything else (fallback tiers,
-coordinator caches, notifications) stays in the source integration.
+cloud_put_json is the low-level PUT mechanics: build Bearer headers, PUT
+JSON with a timeout, classify the HTTP status, optionally parse the response
+body.
+
+cloud_set_privacy_mode / cloud_set_camera_light / cloud_set_notifications /
+cloud_set_pan are the pure per-setter request builders for the source
+integration's 4 named cloud write operations — they build the exact
+endpoint URL + JSON body and delegate to cloud_put_json. Everything else
+(401-retry-once, fallback tiers, coordinator caches, notifications) stays in
+the source integration. async_cloud_set_light_component is NOT extracted —
+its body-building depends on multiple coordinator-owned caches, so it stays
+in the source integration.
 """
 
 from __future__ import annotations
@@ -15,7 +22,16 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import pytest
 
-from bosch_shc_camera_client.cloud import CloudPutResult, cloud_put_json
+from bosch_shc_camera_client.cloud import (
+    CameraLightSetResult,
+    CloudPutResult,
+    PanSetResult,
+    cloud_put_json,
+    cloud_set_camera_light,
+    cloud_set_notifications,
+    cloud_set_pan,
+    cloud_set_privacy_mode,
+)
 
 URL = "https://residential.cbs.boschsecurity.com/v11/video_inputs/cam1/privacy"
 
@@ -188,3 +204,182 @@ class TestCloudPutJsonFailure:
         result = await cloud_put_json(session, "tok", URL, {})
         assert result.ok is False
         assert result.status is None
+
+
+class TestCloudSetPrivacyMode:
+    @pytest.mark.asyncio
+    async def test_on_builds_exact_url_and_body(self):
+        session = _make_session(204)
+        result = await cloud_set_privacy_mode(session, "tok", "cam-1", True)
+        assert result == CloudPutResult(ok=True, status=204, body=None, text="")
+        args, kwargs = session.put.call_args
+        assert (
+            args[0]
+            == "https://residential.cbs.boschsecurity.com/v11/video_inputs/cam-1/privacy"
+        )
+        assert kwargs["json"] == {"privacyMode": "ON", "durationInSeconds": None}
+
+    @pytest.mark.asyncio
+    async def test_off_builds_exact_body(self):
+        session = _make_session(204)
+        await cloud_set_privacy_mode(session, "tok", "cam-1", False)
+        _, kwargs = session.put.call_args
+        assert kwargs["json"] == {"privacyMode": "OFF", "durationInSeconds": None}
+
+    @pytest.mark.asyncio
+    async def test_401_propagates_as_not_ok(self):
+        session = _make_session(401)
+        result = await cloud_set_privacy_mode(session, "tok", "cam-1", True)
+        assert result.ok is False
+        assert result.status == 401
+
+
+class TestCloudSetCameraLightGen1:
+    @pytest.mark.asyncio
+    async def test_on_sends_intensity(self):
+        session = _make_session(204)
+        result = await cloud_set_camera_light(
+            session, "tok", "cam-1", True, gen2=False, last_front_intensity=0.7
+        )
+        assert result == CameraLightSetResult(ok=True, status=204, text="")
+        args, kwargs = session.put.call_args
+        assert args[0] == (
+            "https://residential.cbs.boschsecurity.com/v11/video_inputs/cam-1/lighting_override"
+        )
+        assert kwargs["json"] == {
+            "frontLightOn": True,
+            "wallwasherOn": True,
+            "frontLightIntensity": 0.7,
+        }
+
+    @pytest.mark.asyncio
+    async def test_off_omits_intensity(self):
+        session = _make_session(204)
+        result = await cloud_set_camera_light(
+            session, "tok", "cam-1", False, gen2=False
+        )
+        assert result.ok is True
+        _, kwargs = session.put.call_args
+        assert kwargs["json"] == {"frontLightOn": False, "wallwasherOn": False}
+        assert "frontLightIntensity" not in kwargs["json"]
+
+    @pytest.mark.asyncio
+    async def test_default_intensity_is_1_0(self):
+        session = _make_session(204)
+        await cloud_set_camera_light(session, "tok", "cam-1", True, gen2=False)
+        _, kwargs = session.put.call_args
+        assert kwargs["json"]["frontLightIntensity"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_failure_status_propagates(self):
+        session = _make_session(500)
+        result = await cloud_set_camera_light(session, "tok", "cam-1", True, gen2=False)
+        assert result.ok is False
+        assert result.status == 500
+        assert result.topdown_status is None
+
+
+class TestCloudSetCameraLightGen2:
+    @pytest.mark.asyncio
+    async def test_on_calls_front_and_topdown_endpoints(self):
+        session = MagicMock()
+        session.put.side_effect = [
+            _make_session(204).put.return_value,
+            _make_session(204).put.return_value,
+        ]
+        result = await cloud_set_camera_light(session, "tok", "cam-1", True, gen2=True)
+        assert result.ok is True
+        assert session.put.call_count == 2
+        first_url = session.put.call_args_list[0][0][0]
+        second_url = session.put.call_args_list[1][0][0]
+        assert first_url == (
+            "https://residential.cbs.boschsecurity.com/v11/video_inputs/cam-1/lighting/switch/front"
+        )
+        assert second_url == (
+            "https://residential.cbs.boschsecurity.com/v11/video_inputs/cam-1/lighting/switch/topdown"
+        )
+        first_body = session.put.call_args_list[0][1]["json"]
+        second_body = session.put.call_args_list[1][1]["json"]
+        assert first_body == {"enabled": True}
+        assert second_body == {"enabled": True}
+
+    @pytest.mark.asyncio
+    async def test_ok_if_either_endpoint_succeeds(self):
+        session = MagicMock()
+        session.put.side_effect = [
+            _make_session(500).put.return_value,
+            _make_session(204).put.return_value,
+        ]
+        result = await cloud_set_camera_light(session, "tok", "cam-1", False, gen2=True)
+        assert result.ok is True
+        assert result.status == 500
+        assert result.topdown_status == 204
+
+    @pytest.mark.asyncio
+    async def test_not_ok_if_both_endpoints_fail(self):
+        session = MagicMock()
+        session.put.side_effect = [
+            _make_session(500).put.return_value,
+            _make_session(503).put.return_value,
+        ]
+        result = await cloud_set_camera_light(session, "tok", "cam-1", True, gen2=True)
+        assert result.ok is False
+        assert result.status == 500
+        assert result.topdown_status == 503
+
+
+class TestCloudSetNotifications:
+    @pytest.mark.asyncio
+    async def test_enabled_maps_to_follow_camera_schedule(self):
+        session = _make_session(204)
+        result = await cloud_set_notifications(session, "tok", "cam-1", True)
+        assert result == CloudPutResult(ok=True, status=204, body=None, text="")
+        args, kwargs = session.put.call_args
+        assert args[0] == (
+            "https://residential.cbs.boschsecurity.com/v11/video_inputs/cam-1/enable_notifications"
+        )
+        assert kwargs["json"] == {
+            "enabledNotificationsStatus": "FOLLOW_CAMERA_SCHEDULE"
+        }
+
+    @pytest.mark.asyncio
+    async def test_disabled_maps_to_always_off(self):
+        session = _make_session(204)
+        await cloud_set_notifications(session, "tok", "cam-1", False)
+        _, kwargs = session.put.call_args
+        assert kwargs["json"] == {"enabledNotificationsStatus": "ALWAYS_OFF"}
+
+    @pytest.mark.asyncio
+    async def test_failure_status_propagates(self):
+        session = _make_session(403)
+        result = await cloud_set_notifications(session, "tok", "cam-1", True)
+        assert result.ok is False
+        assert result.status == 403
+
+
+class TestCloudSetPan:
+    @pytest.mark.asyncio
+    async def test_200_with_body_uses_response_position_and_eta(self):
+        session = _make_session(
+            200, {"currentAbsolutePosition": 30, "estimatedTimeToCompletion": 900}
+        )
+        result = await cloud_set_pan(session, "tok", "cam-1", 45)
+        assert result == PanSetResult(ok=True, status=200, position=30, eta_ms=900)
+        args, kwargs = session.put.call_args
+        assert (
+            args[0]
+            == "https://residential.cbs.boschsecurity.com/v11/video_inputs/cam-1/pan"
+        )
+        assert kwargs["json"] == {"absolutePosition": 45}
+
+    @pytest.mark.asyncio
+    async def test_204_with_no_body_falls_back_to_requested_position(self):
+        session = _make_session(204)
+        result = await cloud_set_pan(session, "tok", "cam-1", -45)
+        assert result == PanSetResult(ok=True, status=204, position=-45, eta_ms=0)
+
+    @pytest.mark.asyncio
+    async def test_failure_returns_no_position(self):
+        session = _make_session(500)
+        result = await cloud_set_pan(session, "tok", "cam-1", 10)
+        assert result == PanSetResult(ok=False, status=500, position=None, eta_ms=0)

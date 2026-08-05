@@ -1,5 +1,29 @@
 # Changelog
 
+## [v0.5.6] - 2026-08-05
+
+Add pure per-setter request builders to `cloud.py`, layered on top of the
+existing `cloud_put_json`: `cloud_set_privacy_mode`, `cloud_set_camera_light`
+(+ `CameraLightSetResult`), `cloud_set_notifications`, `cloud_set_pan`
+(+ `PanSetResult`). These are the source integration's 4 named cloud-setter
+endpoints (privacy mode, camera light on/off, notifications, pan) minus the
+401-retry/token-refresh orchestration, multi-tier fallback cascade (cloud ->
+local RCP -> SHC local API), coordinator cache writes, and notification side
+effects -- all of which stay in the source integration's `shc.py`, which now
+calls these pure functions once (and, only for privacy mode, retries once
+after a refreshed token) instead of building the URL/body inline. Exact
+endpoint URLs, JSON body shapes, and the Gen2 dual-endpoint
+`ok = front.ok or topdown.ok` semantics are unchanged -- verified against the
+pre-extraction inline code byte-for-byte. `async_cloud_set_light_component`
+(the more complex front/wallwasher/intensity setter, whose Gen2 wallwasher
+path depends on multiple coordinator-owned caches to build its body) is
+intentionally NOT extracted -- it isn't one of the 4 named setters and its
+body-building isn't stateless. New `CLOUD_API` constant added to `cloud.py`,
+matching the source integration's own constant of the same name
+byte-for-byte. 31 new tests, 100% coverage maintained (410 total), ruff /
+mypy --strict / codespell / pylint / pip-audit clean.
+
+
 ## [v0.5.5] - 2026-08-04
 
 Add `tls_proxy` module: the source integration's asyncio-native TCP→TLS proxy
