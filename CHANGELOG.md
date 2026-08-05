@@ -1,5 +1,31 @@
 # Changelog
 
+## [v0.5.7] - 2026-08-05
+
+Add `media_transfer.py`: pure SMB/FTP/local-save export mechanics extracted
+from the source integration's `smb.py` during a fresh re-evaluation of that
+file (an earlier session had rejected `smb.py` wholesale for being too
+coordinator-coupled -- this pass looked function-by-function instead).
+`is_safe_bosch_url` is the single canonical implementation of an SSRF
+allowlist check that existed as three byte-identical copies across the
+source repo (`smb.py`, `fcm.py`, `coordinator.py`); `sanitize_filename` is
+the filename/dir-component sanitizer used to build export paths from a
+cloud-provided camera title; `sync_http_get` / `sync_http_get_to_file` /
+`sync_http_get_chunked` are the synchronous urllib-based GET-side sibling of
+`cloud.py`'s async `cloud_put_json`, matching the sync style already
+established by `local_rcp.py`'s `rcp_read_local_sync`/`rcp_read_remote_sync`;
+`ftp_connect` / `ftp_exists` / `ftp_makedirs` are plain-FTP protocol
+mechanics with every parameter explicit (server/credentials/connection/path)
+and zero caller-specific state. Deliberately NOT extracted: SMB
+(`smbclient`/`smbprotocol`) mechanics -- `smbclient` is an optional
+third-party dependency of the source integration specifically, and pulling
+it into this library would add real dependency surface for every consumer,
+not just the SMB-upload feature; the retention-cleanup/orchestration/
+coordinator-notification functions in `smb.py` also stay put, as they read
+`coordinator.hass`/`.options` and dispatch HA events directly. 21 new tests,
+100% coverage on the new module, ruff / mypy --strict / codespell / pylint
+clean.
+
 ## [v0.5.6] - 2026-08-05
 
 Add pure per-setter request builders to `cloud.py`, layered on top of the
