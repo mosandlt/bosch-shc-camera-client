@@ -1,5 +1,22 @@
 # Changelog
 
+## [v0.5.8] - 2026-08-05
+
+Add `mini_nvr.py`: pure ffmpeg argv construction and pre-roll ring cache
+mechanics, extracted byte-for-byte from the source integration's
+`recorder.py`. `apply_quality`/`build_ffmpeg_args`/`build_preroll_ffmpeg_args`/
+`create_motion_clip_args` build the exact ffmpeg command lines used for
+continuous recording, the pre-roll ring, and motion-clip concatenation.
+`list_preroll_segments`/`newest_preroll_path`/`prune_preroll_cache`/
+`prune_and_count` are pure filesystem mechanics for the pre-roll ring cache
+directory. `newest_segment_is_finalized` proves a segment's moov atom is
+finalized (safe to concat) via one `ffprobe` subprocess call. The bulk of
+`recorder.py` — per-camera subprocess lifecycle, coordinator locks/caches,
+crash-respawn bookkeeping, the staging/concat orchestration around these
+pure helpers — stays in the integration; only a scoped, well-understood
+first slice moved this round, matching this library's established
+thin-wrapper pattern (`tls_proxy.py`, `media_transfer.py`).
+
 ## [v0.5.7] - 2026-08-05
 
 Add `media_transfer.py`: pure SMB/FTP/local-save export mechanics extracted
