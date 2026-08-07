@@ -1,13 +1,60 @@
 name: Publish to PyPI
 
+# GATE (added 2026-08-07, CI_DOES_THE_RELEASE audit finding): quality.yml
+# only triggers on push to main/PR, never on tag push, so a tag could
+# previously reach PyPI without this exact commit ever having a green CI
+# run of its own -- the same class of gap already closed for the Python
+# CLI's publish-pypi.yml on 2026-07-15/16. `require-ci` polls quality.yml's
+# conclusion on the tagged commit's SHA (which is the same commit as
+# whatever push to main most recently ran it, since this repo tags straight
+# off main with no separate release branch) and blocks `build`/`publish`
+# until it reports SUCCESS.
+
 on:
   push:
     tags:
       - "v*.*.*"
 
 jobs:
+  require-ci:
+    name: Require CI to pass on this commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Poll quality.yml for SUCCESS on this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          deadline=$(( $(date +%s) + 2400 ))   # 40 min ceiling
+          while :; do
+            out=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow quality.yml \
+              --commit "$SHA" --limit 1 \
+              --json conclusion,status \
+              --jq '.[0] | (.conclusion // "none") + " " + (.status // "none")' \
+              2>/dev/null || true)
+            [ -z "$out" ] && out="none none"
+            concl=${out%% *}
+            echo "quality.yml -> conclusion=$concl"
+            case "$concl" in
+              success) break ;;
+              failure|cancelled|timed_out|startup_failure|action_required)
+                echo "::error::quality.yml concluded '$concl' on $SHA — refusing to publish"
+                exit 1 ;;
+            esac
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::Timed out waiting for quality.yml on $SHA"
+              exit 1
+            fi
+            echo "Waiting for quality.yml..."
+            sleep 25
+          done
+
   build:
     name: Build distribution
+    needs: require-ci
     runs-on: ubuntu-latest
 
     steps:
