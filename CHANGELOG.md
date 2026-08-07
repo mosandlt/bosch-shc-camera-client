@@ -1,5 +1,16 @@
 # Changelog
 
+## [v0.5.9] - 2026-08-07
+
+`build_ffmpeg_args`/`build_preroll_ffmpeg_args` now pass `-analyzeduration 10M
+-probesize 10M` before `-i` (was ffmpeg's 5s/5MB default). GitHub #64: the
+pre-roll ring's own RTSP session could exit immediately with rc=234 "Could
+not find codec parameters for stream 0 (Video: h264, none): unspecified
+size" before ever writing a segment. Also: `build_preroll_ffmpeg_args` gained
+the same `quality` parameter `build_ffmpeg_args` already had — the ring
+previously always requested the full `inst=1` stream regardless of the
+caller's quality setting.
+
 ## [v0.5.8] - 2026-08-05
 
 Add `mini_nvr.py`: pure ffmpeg argv construction and pre-roll ring cache

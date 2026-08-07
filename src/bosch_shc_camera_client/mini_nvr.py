@@ -61,6 +61,16 @@ def build_ffmpeg_args(
         # the TLS proxy already rewrites SETUP to TCP-interleaved anyway.
         "-rtsp_transport",
         "tcp",
+        # Bosch cameras can take longer than ffmpeg's 5s/5MB defaults to
+        # deliver a decodable SPS/PPS when a second concurrent RTSP session
+        # is opened against the same camera (e.g. pre-roll ring alongside
+        # the live view) -- without this, ffmpeg exits rc=234 "Could not
+        # find codec parameters ... unspecified size" before ever writing
+        # a frame (GitHub #64).
+        "-analyzeduration",
+        "10M",
+        "-probesize",
+        "10M",
         # -reconnect_* are HTTP-only options and crash ffmpeg with rc=8 on
         # rtsp:// inputs. The integration's own watcher handles respawn on
         # TLS-proxy renewal gaps instead.
@@ -91,14 +101,21 @@ def build_ffmpeg_args(
 
 
 def build_preroll_ffmpeg_args(
-    rtsp_url: str, pattern: str, *, segment_seconds: int = PREROLL_SEGMENT_SECONDS
+    rtsp_url: str,
+    pattern: str,
+    *,
+    segment_seconds: int = PREROLL_SEGMENT_SECONDS,
+    quality: str = "auto",
 ) -> list[str]:
     """ffmpeg args for short segments to a pre-roll ring cache directory.
 
     No -segment_atclocktime, no -strftime_mkdir (ring dir is pre-created).
     No -reconnect* -- those are HTTP-only and crash ffmpeg rc=8 on rtsp://
-    inputs.
+    inputs. `quality` mirrors build_ffmpeg_args() -- the ring previously
+    always requested the full inst=1 stream regardless of the user's
+    nvr_quality option (GitHub #64 follow-up).
     """
+    effective_url = apply_quality(rtsp_url, quality)
     return [
         "ffmpeg",
         "-hide_banner",
@@ -107,8 +124,14 @@ def build_preroll_ffmpeg_args(
         "warning",
         "-rtsp_transport",
         "tcp",
+        # See build_ffmpeg_args() -- same rc=234 codec-probe failure hits the
+        # pre-roll ring's own concurrent RTSP session (GitHub #64).
+        "-analyzeduration",
+        "10M",
+        "-probesize",
+        "10M",
         "-i",
-        rtsp_url,
+        effective_url,
         "-map",
         "0",
         "-c",

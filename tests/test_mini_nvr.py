@@ -59,6 +59,17 @@ class TestBuildFfmpegArgs:
         args = build_ffmpeg_args("rtsp://cam", "/out/%H.mp4")
         assert not any(a.startswith("-reconnect") for a in args)
 
+    def test_analyzeduration_and_probesize_bumped_before_input(self):
+        """GitHub #64: default 5s/5MB probe can miss SPS/PPS on a second
+        concurrent RTSP session, exiting rc=234 'unspecified size' before
+        any frame is written. Both flags must precede -i to take effect."""
+        args = build_ffmpeg_args("rtsp://cam", "/out/%H.mp4")
+        i_index = args.index("-i")
+        assert args[args.index("-analyzeduration") + 1] == "10M"
+        assert args.index("-analyzeduration") < i_index
+        assert args[args.index("-probesize") + 1] == "10M"
+        assert args.index("-probesize") < i_index
+
 
 class TestBuildPrerollFfmpegArgs:
     def test_shape(self):
@@ -69,11 +80,34 @@ class TestBuildPrerollFfmpegArgs:
         assert "-segment_atclocktime" not in args
         assert "-strftime_mkdir" not in args
 
+    def test_analyzeduration_and_probesize_bumped_before_input(self):
+        """GitHub #64: pre-roll ring's own concurrent RTSP session hit the
+        same rc=234 'Could not find codec parameters ... unspecified size'
+        failure the main recorder is guarded against above."""
+        args = build_preroll_ffmpeg_args("rtsp://cam", "/ring/%H%M%S.mp4")
+        i_index = args.index("-i")
+        assert args[args.index("-analyzeduration") + 1] == "10M"
+        assert args.index("-analyzeduration") < i_index
+        assert args[args.index("-probesize") + 1] == "10M"
+        assert args.index("-probesize") < i_index
+
     def test_custom_segment_seconds(self):
         args = build_preroll_ffmpeg_args(
             "rtsp://cam", "/ring/%H.mp4", segment_seconds=5
         )
         assert args[args.index("-segment_time") + 1] == "5"
+
+    def test_low_quality_rewrites_url(self):
+        """GitHub #64 follow-up: the ring previously ignored quality
+        entirely, unlike build_ffmpeg_args."""
+        args = build_preroll_ffmpeg_args(
+            "rtsp://cam?inst=1", "/ring/%H.mp4", quality="low"
+        )
+        assert args[args.index("-i") + 1] == "rtsp://cam?inst=4"
+
+    def test_default_quality_is_auto_unchanged_url(self):
+        args = build_preroll_ffmpeg_args("rtsp://cam?inst=1", "/ring/%H.mp4")
+        assert args[args.index("-i") + 1] == "rtsp://cam?inst=1"
 
 
 class TestCreateMotionClipArgs:
