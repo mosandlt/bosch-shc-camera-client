@@ -21,6 +21,9 @@ Status: early extraction in progress. Not yet feature-complete versus the inline
   fields whose reads succeeded are populated; the rest stay `None`, meaning "not read this round").
   All session/SSL-context objects are caller-injected — this module never builds or caches
   HA-specific process-wide state itself, and never touches any coordinator/cache-dict state.
+- Camera list (`cameras` module): `list_cameras(session, token)` returns frozen `Camera` dataclasses
+  (id, title, hardware version, `CameraModel`, firmware) and raises `BoschCameraAuthError` /
+  `BoschCameraConnectionError` / `BoschCameraInvalidResponseError`.
 - Bosch cloud API (`residential.cbs.boschsecurity.com`) write mechanics (`cloud` module):
   `cloud_put_json()` — Bearer-auth PUT with a timeout, HTTP-status classification, optional JSON
   response parsing. This is the one shared piece extracted from the source integration's 5 cloud-setter

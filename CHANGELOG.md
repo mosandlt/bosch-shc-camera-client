@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.5.10] - 2026-09-30
+
+Add `cameras.py`: `list_cameras(session, token)` fetches the account's camera
+list and returns frozen `Camera` dataclasses (id, title, hardware/firmware
+version, and related fields). Malformed or unexpected responses raise typed
+errors instead of leaking raw exceptions. No dependency changes.
+
 ## [v0.5.9] - 2026-08-07
 
 `build_ffmpeg_args`/`build_preroll_ffmpeg_args` now pass `-analyzeduration 10M
