@@ -133,3 +133,116 @@ async def test_error_hierarchy() -> None:
         BoschCameraInvalidResponseError,
     ):
         assert issubclass(exc, BoschCameraError)
+
+
+# ── get_latest_event_image ───────────────────────────────────────────────────
+
+from bosch_shc_camera_client.cameras import (  # noqa: E402
+    MAX_IMAGE_BYTES,
+    get_latest_event_image,
+)
+
+IMG_URL = "https://media.residential.cbs.boschsecurity.com/e/1.jpg"
+
+
+async def _chunks(body: bytes, size: int):
+    for start in range(0, len(body), size):
+        yield body[start : start + size]
+
+
+def _resp(status: int = 200, *, payload: Any = None, body: bytes = b"jpg", raises=None):
+    resp = MagicMock()
+    resp.status = status
+    resp.json = (
+        AsyncMock(side_effect=raises) if raises else AsyncMock(return_value=payload)
+    )
+    resp.content.iter_chunked = MagicMock(side_effect=lambda size: _chunks(body, size))
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=resp)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    return cm
+
+
+def _events_session(events_resp, *image_resps):
+    session = MagicMock()
+    session.get = MagicMock(side_effect=[events_resp, *image_resps])
+    return session
+
+
+async def test_latest_event_image_returns_newest_usable_image() -> None:
+    session = _events_session(
+        _resp(payload=[{"id": "a"}, {"imageUrl": IMG_URL}, {"imageUrl": IMG_URL}]),
+        _resp(body=b"JPEG"),
+    )
+    assert await get_latest_event_image(session, "tok", CAM_ID) == b"JPEG"
+    events_call, image_call = session.get.call_args_list
+    assert events_call.kwargs["params"] == {"videoInputId": CAM_ID}
+    assert events_call.kwargs["headers"]["Authorization"] == "Bearer tok"
+    assert image_call.args == (IMG_URL,)
+    assert image_call.kwargs["allow_redirects"] is False
+
+
+async def test_latest_event_image_skips_unsafe_missing_and_failed_images() -> None:
+    session = _events_session(
+        _resp(
+            payload=[
+                "not-a-dict",
+                {"imageUrl": 5},
+                {"imageUrl": "https://evil.example/x.jpg"},
+                {"imageUrl": "http://media.boschsecurity.com/x.jpg"},
+                {"imageUrl": "https://user@media.boschsecurity.com/x.jpg"},
+                {"imageUrl": IMG_URL},  # HTTP 404
+                {"imageUrl": IMG_URL},  # empty body
+                {"imageUrl": IMG_URL},  # too large
+                {"imageUrl": IMG_URL},  # timeout
+                {"imageUrl": IMG_URL},  # invalid header value
+                {"imageUrl": IMG_URL},  # ok
+            ]
+        ),
+        _resp(404),
+        _resp(body=b""),
+        _resp(body=b"x" * (MAX_IMAGE_BYTES + 1)),
+        MagicMock(
+            __aenter__=AsyncMock(side_effect=TimeoutError), __aexit__=AsyncMock()
+        ),
+        _resp(body=b"GOOD"),
+    )
+    assert await get_latest_event_image(session, "tok", CAM_ID) == b"GOOD"
+    assert session.get.call_count == 6
+
+
+async def test_latest_event_image_none_when_no_event_has_one() -> None:
+    session = _events_session(_resp(payload=[]))
+    assert await get_latest_event_image(session, "tok", CAM_ID) is None
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_latest_event_image_auth_error(status: int) -> None:
+    session = _events_session(_resp(status))
+    with pytest.raises(BoschCameraAuthError):
+        await get_latest_event_image(session, "tok", CAM_ID)
+
+
+async def test_latest_event_image_http_error() -> None:
+    session = _events_session(_resp(503))
+    with pytest.raises(BoschCameraConnectionError):
+        await get_latest_event_image(session, "tok", CAM_ID)
+
+
+@pytest.mark.parametrize("raises", [aiohttp.ClientError, TimeoutError])
+async def test_latest_event_image_connection_error(raises) -> None:
+    session = MagicMock()
+    session.get = MagicMock(side_effect=raises)
+    with pytest.raises(BoschCameraConnectionError):
+        await get_latest_event_image(session, "tok", CAM_ID)
+
+
+async def test_latest_event_image_invalid_payloads() -> None:
+    with pytest.raises(BoschCameraInvalidResponseError):
+        await get_latest_event_image(
+            _events_session(_resp(payload={"a": 1})), "tok", CAM_ID
+        )
+    with pytest.raises(BoschCameraInvalidResponseError):
+        await get_latest_event_image(
+            _events_session(_resp(raises=ValueError)), "tok", CAM_ID
+        )

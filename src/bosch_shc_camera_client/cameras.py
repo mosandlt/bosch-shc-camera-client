@@ -12,12 +12,18 @@ import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 
 from .cloud import CLOUD_API
+from .media_transfer import is_safe_bosch_url
 
 LIST_TIMEOUT = 15
+EVENTS_TIMEOUT = 15
+IMAGE_TIMEOUT = 20
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+_CHUNK_SIZE = 64 * 1024
 
 
 class BoschCameraError(Exception):
@@ -114,3 +120,78 @@ async def list_cameras(
     if not isinstance(payload, list):
         raise BoschCameraInvalidResponseError("Camera list is not an array")
     return [_parse_camera(item) for item in payload]
+
+
+async def get_latest_event_image(
+    session: aiohttp.ClientSession,
+    token: str,
+    camera_id: str,
+    *,
+    api_url: str = CLOUD_API,
+) -> bytes | None:
+    """Return the image of the newest event of a camera that has one.
+
+    Events come newest first. An event without an image, with an image URL
+    outside the Bosch domains, or whose image cannot be downloaded is skipped.
+    Returns None when no event has a usable image.
+    """
+    try:
+        async with asyncio.timeout(EVENTS_TIMEOUT):
+            async with session.get(
+                f"{api_url}/v11/events",
+                params={"videoInputId": camera_id},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                },
+            ) as resp:
+                if resp.status in (401, 403):
+                    raise BoschCameraAuthError(f"Token rejected (HTTP {resp.status})")
+                if resp.status != 200:
+                    raise BoschCameraConnectionError(
+                        f"Event list returned HTTP {resp.status}"
+                    )
+                payload = await resp.json(content_type=None)
+    except (TimeoutError, aiohttp.ClientError) as err:
+        raise BoschCameraConnectionError(str(err) or type(err).__name__) from err
+    except ValueError as err:
+        raise BoschCameraInvalidResponseError("Response is not JSON") from err
+    if not isinstance(payload, list):
+        raise BoschCameraInvalidResponseError("Event list is not an array")
+    for event in payload:
+        image_url = event.get("imageUrl") if isinstance(event, dict) else None
+        if not isinstance(image_url, str) or not _is_downloadable(image_url):
+            continue
+        image = await _download_image(session, token, image_url)
+        if image is not None:
+            return image
+    return None
+
+
+def _is_downloadable(url: str) -> bool:
+    """Bosch HTTPS URL without user info, which aiohttp rejects next to a token."""
+    return is_safe_bosch_url(url) and "@" not in urlparse(url).netloc
+
+
+async def _download_image(
+    session: aiohttp.ClientSession, token: str, url: str
+) -> bytes | None:
+    """Download one event image, or None when it is unavailable or too large."""
+    try:
+        async with asyncio.timeout(IMAGE_TIMEOUT):
+            # No redirects: only `url` itself was checked against the allowlist.
+            async with session.get(
+                url,
+                headers={"Authorization": f"Bearer {token}", "Accept": "*/*"},
+                allow_redirects=False,
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                image = bytearray()
+                async for chunk in resp.content.iter_chunked(_CHUNK_SIZE):
+                    image += chunk
+                    if len(image) > MAX_IMAGE_BYTES:
+                        return None
+    except (TimeoutError, aiohttp.ClientError, ValueError):
+        return None
+    return bytes(image) or None

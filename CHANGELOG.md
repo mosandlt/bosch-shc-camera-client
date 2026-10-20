@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.5.11] - 2026-10-20
+
+Add `cameras.get_latest_event_image(session, token, camera_id)`: returns the
+image of the newest event of a camera that has one, or `None`. Events without
+an image, image URLs outside the Bosch domains and failed downloads are
+skipped; redirects are not followed. Auth, connection and payload problems
+raise the same typed errors as `list_cameras`. No dependency changes.
+
 ## [v0.5.10] - 2026-09-30
 
 Add `cameras.py`: `list_cameras(session, token)` fetches the account's camera
