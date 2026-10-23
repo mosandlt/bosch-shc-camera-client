@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -277,6 +278,9 @@ def test_account_id_from_token_returns_subject() -> None:
         "not-a-jwt",
         "a.!!!.c",
         "a.bm90LWpzb24.c",
+        "a.eyJzdWIiOiJ4In0",
+        "a.eyJzdWIiOiJ4In0.c.d",
+        "a." + base64.urlsafe_b64encode('{"sub":"x"}'.encode("utf-16")).decode() + ".c",
         _token([]),
         _token({}),
         _token({"sub": 1}),

@@ -56,12 +56,12 @@ def account_id_from_token(access_token: str) -> str:
     ``sub`` claim.
     """
     try:
-        payload = access_token.split(".")[1]
+        _header, payload, _signature = access_token.split(".")
         claims = json.loads(
-            base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+            base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)).decode()
         )
         account_id = claims["sub"]
-    except (IndexError, ValueError, KeyError, TypeError, binascii.Error) as err:
+    except (ValueError, KeyError, TypeError, binascii.Error) as err:
         raise BoschCameraAuthError("access token has no readable subject") from err
     if (
         not isinstance(account_id, str)
