@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.5.12] - 2026-10-23
+
+Add `cameras.account_id_from_token(access_token)`: returns the account
+identifier (`sub` claim) of an access token without an extra JWT dependency and
+raises `BoschCameraAuthError` for tokens without a usable subject. No
+dependency changes.
+
 ## [v0.5.11] - 2026-10-20
 
 Add `cameras.get_latest_event_image(session, token, camera_id)`: returns the

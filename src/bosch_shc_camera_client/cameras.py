@@ -9,6 +9,9 @@ refresh and no retries, so an expired token surfaces as
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import json
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -24,6 +27,7 @@ EVENTS_TIMEOUT = 15
 IMAGE_TIMEOUT = 20
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _CHUNK_SIZE = 64 * 1024
+MAX_ACCOUNT_ID_LENGTH = 128
 
 
 class BoschCameraError(Exception):
@@ -40,6 +44,32 @@ class BoschCameraConnectionError(BoschCameraError):
 
 class BoschCameraInvalidResponseError(BoschCameraError):
     """The cloud API answered with a payload of an unexpected shape."""
+
+
+def account_id_from_token(access_token: str) -> str:
+    """Return the account identifier (JWT ``sub`` claim) of an access token.
+
+    The token comes straight from the token endpoint over TLS, so the claim is
+    read without verifying the signature again.
+
+    Raises BoschCameraAuthError if the token is not a JWT or has no usable
+    ``sub`` claim.
+    """
+    try:
+        payload = access_token.split(".")[1]
+        claims = json.loads(
+            base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+        )
+        account_id = claims["sub"]
+    except (IndexError, ValueError, KeyError, TypeError, binascii.Error) as err:
+        raise BoschCameraAuthError("access token has no readable subject") from err
+    if (
+        not isinstance(account_id, str)
+        or not account_id.strip()
+        or len(account_id) > MAX_ACCOUNT_ID_LENGTH
+    ):
+        raise BoschCameraAuthError("access token has no usable subject")
+    return account_id
 
 
 class CameraModel(StrEnum):

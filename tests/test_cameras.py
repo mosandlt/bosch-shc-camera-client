@@ -246,3 +246,49 @@ async def test_latest_event_image_invalid_payloads() -> None:
         await get_latest_event_image(
             _events_session(_resp(raises=ValueError)), "tok", CAM_ID
         )
+
+
+# ---------------------------------------------------------------------------
+# account_id_from_token
+# ---------------------------------------------------------------------------
+
+
+def _token(claims: object) -> str:
+    import base64
+    import json
+
+    def part(value: object) -> str:
+        return (
+            base64.urlsafe_b64encode(json.dumps(value).encode()).rstrip(b"=").decode()
+        )
+
+    return ".".join([part({"alg": "none"}), part(claims), "sig"])
+
+
+def test_account_id_from_token_returns_subject() -> None:
+    from bosch_shc_camera_client.cameras import account_id_from_token
+
+    assert account_id_from_token(_token({"sub": "fake-account"})) == "fake-account"
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "not-a-jwt",
+        "a.!!!.c",
+        "a.bm90LWpzb24.c",
+        _token([]),
+        _token({}),
+        _token({"sub": 1}),
+        _token({"sub": "  "}),
+        _token({"sub": "x" * 129}),
+    ],
+)
+def test_account_id_from_token_rejects_unusable_tokens(token: str) -> None:
+    from bosch_shc_camera_client.cameras import (
+        BoschCameraAuthError,
+        account_id_from_token,
+    )
+
+    with pytest.raises(BoschCameraAuthError):
+        account_id_from_token(token)
