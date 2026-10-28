@@ -4,6 +4,7 @@ from . import (
     actions,
     auth_utils,
     cameras,
+    client,
     cloud,
     events,
     live,
@@ -15,11 +16,14 @@ from . import (
     states,
     tls_proxy,
 )
+from .client import BoschCameraClient
 
 __all__ = [
+    "BoschCameraClient",
     "actions",
     "auth_utils",
     "cameras",
+    "client",
     "cloud",
     "events",
     "live",

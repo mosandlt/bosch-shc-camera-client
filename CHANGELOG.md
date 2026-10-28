@@ -1,5 +1,14 @@
 # Changelog
 
+## [v0.7.0] - 2026-10-28
+
+Add `BoschCameraClient` (`client.py`): holds the aiohttp `ClientSession` and an
+async token source (`() -> str`, awaited on every call so the token never goes
+stale). Methods `list_cameras`, `get_latest_event_image`,
+`get_camera_account_states`, `set_privacy_mode` and
+`open_local_live_connection` delegate to the existing functions, which stay
+unchanged. No dependency changes.
+
 ## [v0.6.3] - 2026-10-28
 
 Add `live.py` with `open_local_live_connection`: opens a live-stream session on
