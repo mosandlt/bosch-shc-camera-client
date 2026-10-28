@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.6.1] - 2026-10-28
+
+Add `settings.get_setting_raw` (GET returning `RawResponse(status, body)`
+without raising on HTTP errors) and `settings.put_setting` (PUT/POST of a
+complete body without a preceding GET; error messages quote the first 200
+characters of the answer). Both accept any simple `video_inputs` sub-path and
+reject camera ids or paths with unexpected characters. No dependency changes.
+
 ## [v0.6.0] - 2026-10-28
 
 Add `settings.py`, `events.py` and `actions.py`. `settings` reads and writes

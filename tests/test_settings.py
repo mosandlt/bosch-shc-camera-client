@@ -341,3 +341,85 @@ async def test_merge_put_rejects_nan_changes() -> None:
             {"a": float("nan")},
             "http://x",  # type: ignore[arg-type]
         )
+
+
+# --- raw read / write ------------------------------------------------------
+
+
+def _raw_session(status: int, payload: Any = None, raises: Exception | None = None):
+    session = MagicMock()
+    cm = _cm(status, payload, raises)
+    session.get = MagicMock(return_value=cm)
+    return session
+
+
+async def test_get_setting_raw_ok() -> None:
+    session = _raw_session(200, {"a": 1})
+    assert await s.get_setting_raw(session, "t", CAM, "audio") == s.RawResponse(
+        200, {"a": 1}
+    )
+    assert session.get.call_args.args[0] == f"{BASE}/audio"
+
+
+@pytest.mark.parametrize("status", [401, 403, 442, 500])
+async def test_get_setting_raw_status_not_raised(status: int) -> None:
+    session = _raw_session(status, {"x": 1})
+    assert await s.get_setting_raw(session, "t", CAM, "audio") == s.RawResponse(
+        status, None
+    )
+
+
+async def test_get_setting_raw_malformed_body() -> None:
+    session = _raw_session(200, None, ValueError("bad"))
+    assert await s.get_setting_raw(session, "t", CAM, "audio") == s.RawResponse(
+        200, None
+    )
+
+
+@pytest.mark.parametrize("err", [TimeoutError(), aiohttp.ClientError("x")])
+async def test_get_setting_raw_connection_error(err: Exception) -> None:
+    session = MagicMock()
+    session.get = MagicMock(side_effect=err)
+    assert await s.get_setting_raw(session, "t", CAM, "audio") == s.RawResponse(0, None)
+
+
+async def test_raw_helpers_reject_unknown_endpoint() -> None:
+    session = MagicMock()
+    with pytest.raises(ValueError):
+        await s.get_setting_raw(session, "t", CAM, "../x")
+    with pytest.raises(ValueError):
+        await s.put_setting(session, "t", CAM, "wifi info?x=1", {})
+    with pytest.raises(ValueError):
+        await s.put_setting(session, "t", CAM, "audio", {}, method="DELETE")
+    with pytest.raises(ValueError):
+        await s.get_setting_raw(session, "t", "../../x", "audio")
+
+
+async def test_put_setting_sends_body_without_get() -> None:
+    session = _session(put={"ok": True})
+    result = await s.put_setting(session, "t", CAM, "lighting/motion", {"k": 1})
+    assert result.status == 200
+    assert _sent(session) == ("PUT", f"{BASE}/lighting/motion", {"k": 1})
+    session.get.assert_not_called()
+
+
+async def test_put_setting_post() -> None:
+    session = _session(put=None)
+    await s.put_setting(session, "t", CAM, "privacy_masks", [], method="POST")
+    assert _sent(session)[0] == "POST"
+
+
+async def test_put_setting_error_quotes_text() -> None:
+    session = _session(status=500)
+    session.request.return_value.__aenter__.return_value.text = AsyncMock(
+        return_value="e" * 300
+    )
+    with pytest.raises(BoschCameraConnectionError) as info:
+        await s.put_setting(session, "t", CAM, "audio", {})
+    assert str(info.value) == "audio returned HTTP 500: " + "e" * 200
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_put_setting_auth(status: int) -> None:
+    with pytest.raises(BoschCameraAuthError):
+        await s.put_setting(_session(status=status), "t", CAM, "audio", {})

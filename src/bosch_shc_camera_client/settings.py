@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -34,6 +35,12 @@ _OK_STATUSES = (200, 201, 204)
 _PRIVACY_STATUS = 443
 MOTION_LIGHT_SENSITIVITY_RANGE = (1, 5)
 LEVEL_RANGE = (0, 100)
+READ_TIMEOUT = 8
+ERROR_TEXT_LIMIT = 200
+# Only these endpoint names may be passed to the raw helpers, so no caller
+# can build an arbitrary path.
+ENDPOINT_PATTERN = re.compile(r"[A-Za-z_]+(?:/[A-Za-z_]+)?")
+CAMERA_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 
 
 class BoschCameraPrivacyModeError(BoschCameraConnectionError):
@@ -64,6 +71,14 @@ class SettingWriteResult:
     status: int
     response: dict[str, Any] | None
     sent: dict[str, Any] | list[Any]
+
+
+@dataclass(frozen=True, slots=True)
+class RawResponse:
+    """HTTP status (0 on connection error or timeout) and parsed JSON body or None."""
+
+    status: int
+    body: Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,8 +233,10 @@ async def _send(
     url: str,
     body: dict[str, Any] | list[Any],
     what: str,
+    *,
+    error_detail: bool = False,
 ) -> SettingWriteResult:
-    """Send `body` as JSON and classify the answer."""
+    """Send `body` as JSON and classify the answer; optionally quote the error text."""
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
@@ -233,9 +250,11 @@ async def _send(
                 if resp.status == _PRIVACY_STATUS:
                     raise BoschCameraPrivacyModeError(f"{what} blocked by privacy mode")
                 if resp.status not in _OK_STATUSES:
-                    raise BoschCameraConnectionError(
-                        f"{what} returned HTTP {resp.status}"
-                    )
+                    message = f"{what} returned HTTP {resp.status}"
+                    if error_detail:
+                        text = await resp.text(errors="replace")
+                        message += f": {text[:ERROR_TEXT_LIMIT]}"
+                    raise BoschCameraConnectionError(message)
                 try:
                     parsed = await resp.json(content_type=None)
                 except ValueError:
@@ -271,6 +290,68 @@ async def _merge_put(
         _url(api_url, cam_id, endpoint),
         {**current, **changes},
         endpoint,
+    )
+
+
+def _check_endpoint(endpoint: str, cam_id: str) -> None:
+    if not CAMERA_ID_PATTERN.fullmatch(cam_id):
+        raise ValueError("invalid camera id")
+    if not ENDPOINT_PATTERN.fullmatch(endpoint):
+        raise ValueError(f"unknown settings endpoint: {endpoint}")
+
+
+async def get_setting_raw(
+    session: aiohttp.ClientSession,
+    token: str,
+    cam_id: str,
+    endpoint: str,
+    *,
+    timeout: float = READ_TIMEOUT,
+    api_url: str = CLOUD_API,
+) -> RawResponse:
+    """GET a known endpoint; HTTP errors and malformed bodies are returned, not raised."""
+    _check_endpoint(endpoint, cam_id)
+    try:
+        async with asyncio.timeout(timeout):
+            async with session.get(
+                _url(api_url, cam_id, endpoint),
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                },
+            ) as resp:
+                if resp.status != 200:
+                    return RawResponse(resp.status, None)
+                try:
+                    return RawResponse(200, await resp.json(content_type=None))
+                except ValueError:
+                    return RawResponse(200, None)
+    except (TimeoutError, aiohttp.ClientError):
+        return RawResponse(0, None)
+
+
+async def put_setting(
+    session: aiohttp.ClientSession,
+    token: str,
+    cam_id: str,
+    endpoint: str,
+    body: dict[str, Any] | list[Any],
+    *,
+    method: str = "PUT",
+    api_url: str = CLOUD_API,
+) -> SettingWriteResult:
+    """Send `body` as is to a known endpoint; errors quote the first 200 characters."""
+    _check_endpoint(endpoint, cam_id)
+    if method not in ("PUT", "POST"):
+        raise ValueError("method must be PUT or POST")
+    return await _send(
+        session,
+        token,
+        method,
+        _url(api_url, cam_id, endpoint),
+        body,
+        endpoint,
+        error_detail=True,
     )
 
 
