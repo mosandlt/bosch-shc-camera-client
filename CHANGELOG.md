@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.5.13] - 2026-10-28
+
+Add `states.py` with typed read helpers: `get_camera_account_states` (privacy
+mode and notification status per camera from the camera list), `get_wifi_info`,
+`get_motion_settings`, `get_notification_types`, `get_light_state` and
+`get_firmware_status`, returning frozen dataclasses. Errors map to the same
+typed exceptions as `list_cameras`. No dependency changes.
+
 ## [v0.5.12] - 2026-10-23
 
 Add `cameras.account_id_from_token(access_token)`: returns the account

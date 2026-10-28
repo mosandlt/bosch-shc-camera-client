@@ -8,6 +8,7 @@ from . import (
     media_transfer,
     mini_nvr,
     rcp,
+    states,
     tls_proxy,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "media_transfer",
     "mini_nvr",
     "rcp",
+    "states",
     "tls_proxy",
 ]
