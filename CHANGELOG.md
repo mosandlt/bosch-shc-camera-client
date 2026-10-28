@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.6.0] - 2026-10-28
+
+Add `settings.py`, `events.py` and `actions.py`. `settings` reads and writes
+lighting (override, schedule status, motion and ambient), audio, lens
+elevation, intrusion detection, alarm status, motion zones and privacy masks;
+read-modify-write calls merge into the current server state. `events` lists
+camera events and feature flags as typed dataclasses. `actions` covers ping,
+soft reset, hard reset and the alarm. All calls raise the same typed errors as
+`list_cameras`; non-finite numbers count as missing. No dependency changes.
+
 ## [v0.5.13] - 2026-10-28
 
 Add `states.py` with typed read helpers: `get_camera_account_states` (privacy
