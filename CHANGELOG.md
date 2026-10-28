@@ -1,5 +1,16 @@
 # Changelog
 
+## [v0.6.3] - 2026-10-28
+
+Add `live.py` with `open_local_live_connection`: opens a live-stream session on
+the camera's local interface (`PUT /v11/video_inputs/{id}/connection`, type
+LOCAL) and returns a frozen `LiveConnection` (`connection_type`, LAN host and
+port, Digest credentials, snapshot address, session length, buffering hint).
+`LiveConnection.stream_url` builds the RTSP address of the local TLS proxy
+from `tls_proxy.start_tls_proxy`. Each call rotates the Digest credentials, so
+it must not be repeated as a keepalive. Same typed errors as the other
+modules. No dependency changes.
+
 ## [v0.6.2] - 2026-10-28
 
 Errors raised for an HTTP answer now carry `status` and `body` (first 200
