@@ -136,3 +136,7 @@ disable = [
 
 [tool.coverage.run]
 branch = true
+
+[tool.codespell]
+# `upToDate` is a key of the firmware response.
+ignore-words-list = "uptodate"
