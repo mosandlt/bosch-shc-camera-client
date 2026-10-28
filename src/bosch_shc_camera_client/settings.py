@@ -25,6 +25,7 @@ from .cameras import (
     BoschCameraConnectionError,
     BoschCameraInvalidResponseError,
     fetch_json,
+    read_error_body,
 )
 from .cloud import CLOUD_API
 
@@ -39,7 +40,7 @@ READ_TIMEOUT = 8
 ERROR_TEXT_LIMIT = 200
 # Only these endpoint names may be passed to the raw helpers, so no caller
 # can build an arbitrary path.
-ENDPOINT_PATTERN = re.compile(r"[A-Za-z_]+(?:/[A-Za-z_]+)?")
+ENDPOINT_PATTERN = re.compile(r"[A-Za-z_]+(?:/[A-Za-z_]+){0,2}")
 CAMERA_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 
 
@@ -70,7 +71,7 @@ class SettingWriteResult:
 
     status: int
     response: dict[str, Any] | None
-    sent: dict[str, Any] | list[Any]
+    sent: dict[str, Any] | list[Any] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +189,22 @@ def _url(api_url: str, cam_id: str, endpoint: str) -> str:
     return f"{api_url}/v11/video_inputs/{cam_id}/{endpoint}"
 
 
+async def _fetch(
+    session: aiohttp.ClientSession, token: str, url: str, what: str
+) -> Any:
+    """`fetch_json`, with HTTP 443 raised as the privacy mode error."""
+    try:
+        return await fetch_json(session, token, url, what)
+    except BoschCameraConnectionError as err:
+        if err.status != _PRIVACY_STATUS or isinstance(
+            err, BoschCameraPrivacyModeError
+        ):
+            raise
+        raise BoschCameraPrivacyModeError(
+            f"{what} blocked by privacy mode", status=err.status, body=err.body
+        ) from err
+
+
 async def _get_object(
     session: aiohttp.ClientSession,
     token: str,
@@ -195,9 +212,7 @@ async def _get_object(
     endpoint: str,
     api_url: str,
 ) -> dict[str, Any]:
-    payload = await fetch_json(
-        session, token, _url(api_url, cam_id, endpoint), endpoint
-    )
+    payload = await _fetch(session, token, _url(api_url, cam_id, endpoint), endpoint)
     if not isinstance(payload, dict):
         raise BoschCameraInvalidResponseError(f"{endpoint} is not an object")
     return payload
@@ -210,9 +225,7 @@ async def _get_regions(
     endpoint: str,
     api_url: str,
 ) -> list[Region]:
-    payload = await fetch_json(
-        session, token, _url(api_url, cam_id, endpoint), endpoint
-    )
+    payload = await _fetch(session, token, _url(api_url, cam_id, endpoint), endpoint)
     if not isinstance(payload, list):
         raise BoschCameraInvalidResponseError(f"{endpoint} is not an array")
     regions: list[Region] = []
@@ -231,12 +244,13 @@ async def _send(
     token: str,
     method: str,
     url: str,
-    body: dict[str, Any] | list[Any],
+    body: dict[str, Any] | list[Any] | None,
     what: str,
     *,
     error_detail: bool = False,
 ) -> SettingWriteResult:
-    """Send `body` as JSON and classify the answer; optionally quote the error text."""
+    """Send `body` as JSON (None sends no bytes) and classify the answer."""
+    kwargs: dict[str, Any] = {"data": ""} if body is None else {"json": body}
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
@@ -244,17 +258,27 @@ async def _send(
     }
     try:
         async with asyncio.timeout(WRITE_TIMEOUT):
-            async with session.request(method, url, json=body, headers=headers) as resp:
-                if resp.status in (401, 403):
-                    raise BoschCameraAuthError(f"Token rejected (HTTP {resp.status})")
-                if resp.status == _PRIVACY_STATUS:
-                    raise BoschCameraPrivacyModeError(f"{what} blocked by privacy mode")
+            async with session.request(method, url, headers=headers, **kwargs) as resp:
                 if resp.status not in _OK_STATUSES:
+                    detail = await read_error_body(resp)
+                    if resp.status in (401, 403):
+                        raise BoschCameraAuthError(
+                            f"Token rejected (HTTP {resp.status})",
+                            status=resp.status,
+                            body=detail,
+                        )
+                    if resp.status == _PRIVACY_STATUS:
+                        raise BoschCameraPrivacyModeError(
+                            f"{what} blocked by privacy mode",
+                            status=resp.status,
+                            body=detail,
+                        )
                     message = f"{what} returned HTTP {resp.status}"
                     if error_detail:
-                        text = await resp.text(errors="replace")
-                        message += f": {text[:ERROR_TEXT_LIMIT]}"
-                    raise BoschCameraConnectionError(message)
+                        message += f": {detail or ''}"
+                    raise BoschCameraConnectionError(
+                        message, status=resp.status, body=detail
+                    )
                 try:
                     parsed = await resp.json(content_type=None)
                 except ValueError:
@@ -335,12 +359,12 @@ async def put_setting(
     token: str,
     cam_id: str,
     endpoint: str,
-    body: dict[str, Any] | list[Any],
+    body: dict[str, Any] | list[Any] | None,
     *,
     method: str = "PUT",
     api_url: str = CLOUD_API,
 ) -> SettingWriteResult:
-    """Send `body` as is to a known endpoint; errors quote the first 200 characters."""
+    """Send `body` as is (None: no bytes) to a known endpoint; errors quote 200 characters."""
     _check_endpoint(endpoint, cam_id)
     if method not in ("PUT", "POST"):
         raise ValueError("method must be PUT or POST")

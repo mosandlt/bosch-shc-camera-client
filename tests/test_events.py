@@ -17,7 +17,9 @@ from bosch_shc_camera_client.cameras import (
 from bosch_shc_camera_client.events import (
     FeatureFlags,
     get_feature_flags,
+    get_last_event,
     list_events,
+    list_events_raw,
     parse_event_timestamp,
 )
 
@@ -137,3 +139,34 @@ async def test_get_feature_flags_invalid(payload: Any) -> None:
 
 def test_timestamp_overflow_is_none() -> None:
     assert parse_event_timestamp("0001-01-01T00:00:00+01:00") is None
+
+
+async def test_list_events_raw_returns_dicts() -> None:
+    session = _session(payload=[{"id": "e1"}, "junk", {"id": "e2"}])
+    assert await list_events_raw(session, "tok", CAM_ID, limit=5) == [
+        {"id": "e1"},
+        {"id": "e2"},
+    ]
+    assert session.get.call_args.args[0].endswith(
+        f"/v11/events?videoInputId={CAM_ID}&limit=5"
+    )
+
+
+async def test_list_events_raw_rejects_non_array() -> None:
+    with pytest.raises(BoschCameraInvalidResponseError):
+        await list_events_raw(_session(payload={}), "tok", CAM_ID)
+
+
+async def test_get_last_event() -> None:
+    session = _session(payload={"id": "e1"})
+    assert await get_last_event(session, "tok", CAM_ID) == {"id": "e1"}
+    assert session.get.call_args.args[0].endswith(
+        f"/v11/video_inputs/{CAM_ID}/last_event"
+    )
+
+
+async def test_get_last_event_errors() -> None:
+    with pytest.raises(BoschCameraInvalidResponseError):
+        await get_last_event(_session(payload=[]), "tok", CAM_ID)
+    with pytest.raises(BoschCameraConnectionError):
+        await get_last_event(_session(status=500), "tok", CAM_ID)

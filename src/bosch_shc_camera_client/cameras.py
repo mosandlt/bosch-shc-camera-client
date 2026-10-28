@@ -30,8 +30,36 @@ _CHUNK_SIZE = 64 * 1024
 MAX_ACCOUNT_ID_LENGTH = 128
 
 
+ERROR_BODY_TIMEOUT = 1.0
+ERROR_BODY_LIMIT = 200
+
+
 class BoschCameraError(Exception):
-    """Base class for errors raised by the camera client."""
+    """Base class for errors raised by the camera client.
+
+    `status` and `body` (first 200 characters) are set when the error stems
+    from an HTTP answer.
+    """
+
+    def __init__(
+        self,
+        *args: object,
+        status: int | None = None,
+        body: str | None = None,
+    ) -> None:
+        super().__init__(*args)
+        self.status = status
+        self.body = body
+
+
+async def read_error_body(resp: Any) -> str | None:
+    """Return the first 200 characters of an error response, None if unreadable."""
+    try:
+        async with asyncio.timeout(ERROR_BODY_TIMEOUT):
+            text = await resp.text(errors="replace")
+    except Exception:  # body is only extra context for an error already being raised
+        return None
+    return text[:ERROR_BODY_LIMIT] if isinstance(text, str) else None
 
 
 class BoschCameraAuthError(BoschCameraError):
@@ -44,6 +72,16 @@ class BoschCameraConnectionError(BoschCameraError):
 
 class BoschCameraInvalidResponseError(BoschCameraError):
     """The cloud API answered with a payload of an unexpected shape."""
+
+
+async def raise_if_token_rejected(resp: Any) -> None:
+    """Raise `BoschCameraAuthError` with status and body for HTTP 401/403."""
+    if resp.status in (401, 403):
+        raise BoschCameraAuthError(
+            f"Token rejected (HTTP {resp.status})",
+            status=resp.status,
+            body=await read_error_body(resp),
+        )
 
 
 def account_id_from_token(access_token: str) -> str:
@@ -140,11 +178,12 @@ async def fetch_json(
                     "Accept": "application/json",
                 },
             ) as resp:
-                if resp.status in (401, 403):
-                    raise BoschCameraAuthError(f"Token rejected (HTTP {resp.status})")
+                await raise_if_token_rejected(resp)
                 if resp.status != 200:
                     raise BoschCameraConnectionError(
-                        f"{what} returned HTTP {resp.status}"
+                        f"{what} returned HTTP {resp.status}",
+                        status=resp.status,
+                        body=await read_error_body(resp),
                     )
                 return await resp.json(content_type=None)
     except (TimeoutError, aiohttp.ClientError) as err:

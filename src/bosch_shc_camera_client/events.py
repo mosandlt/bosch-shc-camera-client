@@ -18,6 +18,7 @@ from .cloud import CLOUD_API
 DEFAULT_EVENT_LIMIT = 20
 EVENTS_TIMEOUT = 15
 FLAGS_TIMEOUT = 5
+LAST_EVENT_TIMEOUT = 5
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,47 @@ async def list_events(
     if not isinstance(payload, list):
         raise BoschCameraInvalidResponseError("Event list is not an array")
     return [_parse_event(item, camera_id) for item in payload]
+
+
+async def list_events_raw(
+    session: aiohttp.ClientSession,
+    token: str,
+    camera_id: str,
+    *,
+    limit: int = DEFAULT_EVENT_LIMIT,
+    api_url: str = CLOUD_API,
+) -> list[dict[str, Any]]:
+    """Return the newest events as the API's own dicts, newest first."""
+    payload = await fetch_json(
+        session,
+        token,
+        f"{api_url}/v11/events?videoInputId={camera_id}&limit={limit}",
+        "Event list",
+        EVENTS_TIMEOUT,
+    )
+    if not isinstance(payload, list):
+        raise BoschCameraInvalidResponseError("Event list is not an array")
+    return [item for item in payload if isinstance(item, dict)]
+
+
+async def get_last_event(
+    session: aiohttp.ClientSession,
+    token: str,
+    camera_id: str,
+    *,
+    api_url: str = CLOUD_API,
+) -> dict[str, Any]:
+    """Return the camera's newest event as the API's own dict."""
+    payload = await fetch_json(
+        session,
+        token,
+        f"{api_url}/v11/video_inputs/{camera_id}/last_event",
+        "Last event",
+        LAST_EVENT_TIMEOUT,
+    )
+    if not isinstance(payload, dict):
+        raise BoschCameraInvalidResponseError("Last event is not an object")
+    return payload
 
 
 async def get_feature_flags(

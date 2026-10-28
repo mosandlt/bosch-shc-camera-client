@@ -1,5 +1,14 @@
 # Changelog
 
+## [v0.6.2] - 2026-10-28
+
+Errors raised for an HTTP answer now carry `status` and `body` (first 200
+characters, read with a one second limit) so callers no longer parse
+messages. Add `events.list_events_raw` and `events.get_last_event`,
+`actions.ping_raw`, an empty-body option for `settings.put_setting`
+(`body=None`), the three-segment path `lighting/switch/front`, and privacy
+mode errors for the settings getters. No dependency changes.
+
 ## [v0.6.1] - 2026-10-28
 
 Add `settings.get_setting_raw` (GET returning `RawResponse(status, body)`

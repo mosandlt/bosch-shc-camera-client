@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -296,3 +297,39 @@ def test_account_id_from_token_rejects_unusable_tokens(token: str) -> None:
 
     with pytest.raises(BoschCameraAuthError):
         account_id_from_token(token)
+
+
+async def test_errors_carry_status_and_body() -> None:
+    session = _session(503)
+    session.get.return_value.__aenter__.return_value.text = AsyncMock(
+        return_value="x" * 300
+    )
+    with pytest.raises(BoschCameraConnectionError) as info:
+        await list_cameras(session, "tok")
+    assert (info.value.status, info.value.body) == (503, "x" * 200)
+    session = _session(401)
+    session.get.return_value.__aenter__.return_value.text = AsyncMock(return_value="no")
+    with pytest.raises(BoschCameraAuthError) as ainfo:
+        await list_cameras(session, "tok")
+    assert (ainfo.value.status, ainfo.value.body) == (401, "no")
+
+
+async def test_error_without_http_answer_has_no_status() -> None:
+    err = BoschCameraConnectionError("down")
+    assert (err.status, err.body, str(err)) == (None, None, "down")
+
+
+async def test_read_error_body_gives_up_on_stalled_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bosch_shc_camera_client import cameras as cam_mod
+
+    monkeypatch.setattr(cam_mod, "ERROR_BODY_TIMEOUT", 0.01)
+
+    async def _stall(**_: object) -> str:
+        await asyncio.sleep(1)
+        return "late"
+
+    resp = MagicMock()
+    resp.text = _stall
+    assert await cam_mod.read_error_body(resp) is None

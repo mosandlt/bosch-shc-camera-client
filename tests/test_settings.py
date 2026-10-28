@@ -423,3 +423,105 @@ async def test_put_setting_error_quotes_text() -> None:
 async def test_put_setting_auth(status: int) -> None:
     with pytest.raises(BoschCameraAuthError):
         await s.put_setting(_session(status=status), "t", CAM, "audio", {})
+
+
+# --- status/body on errors, empty body, nested endpoints --------------------
+
+
+def _with_text(session: MagicMock, text: Any, attr: str = "request") -> MagicMock:
+    resp = getattr(session, attr).return_value.__aenter__.return_value
+    resp.text = (
+        AsyncMock(return_value=text)
+        if not isinstance(text, Exception)
+        else (AsyncMock(side_effect=text))
+    )
+    return session
+
+
+async def test_write_errors_carry_status_and_body() -> None:
+    session = _with_text(_session(status=400), "b" * 300)
+    with pytest.raises(BoschCameraConnectionError) as info:
+        await s.set_motion_zones(session, "t", CAM, [])
+    assert (info.value.status, info.value.body) == (400, "b" * 200)
+    assert str(info.value) == "motion_sensitive_areas returned HTTP 400"
+
+    session = _with_text(_session(status=443), "private")
+    with pytest.raises(s.BoschCameraPrivacyModeError) as pinfo:
+        await s.set_privacy_masks(session, "t", CAM, [])
+    assert (pinfo.value.status, pinfo.value.body) == (443, "private")
+
+    session = _with_text(_session(status=401), "no")
+    with pytest.raises(BoschCameraAuthError) as ainfo:
+        await s.set_lens_elevation(session, "t", CAM, 1.0)
+    assert (ainfo.value.status, ainfo.value.body) == (401, "no")
+
+
+async def test_write_error_body_unreadable_is_none() -> None:
+    session = _with_text(_session(status=500), ValueError("bad"))
+    with pytest.raises(BoschCameraConnectionError) as info:
+        await s.set_lens_elevation(session, "t", CAM, 1.0)
+    assert (info.value.status, info.value.body) == (500, None)
+
+
+async def test_write_error_body_not_text_is_none() -> None:
+    session = _with_text(_session(status=500), 12)
+    with pytest.raises(BoschCameraConnectionError) as info:
+        await s.set_lens_elevation(session, "t", CAM, 1.0)
+    assert info.value.body is None
+
+
+@pytest.mark.parametrize(
+    "endpoint", ["lighting/switch/front", "lighting/switch/topdown"]
+)
+async def test_endpoint_pattern_allows_two_slashes(endpoint: str) -> None:
+    session = _session(put=None)
+    await s.put_setting(session, "t", CAM, endpoint, {"enabled": True})
+    assert _sent(session)[1] == f"{BASE}/{endpoint}"
+
+
+@pytest.mark.parametrize("endpoint", ["a/b/c/d", "a//b", "lighting/switch/fr0nt", ""])
+async def test_endpoint_pattern_rejects_others(endpoint: str) -> None:
+    with pytest.raises(ValueError):
+        await s.put_setting(MagicMock(), "t", CAM, endpoint, {})
+
+
+async def test_put_setting_without_body_sends_no_bytes() -> None:
+    session = _session(status=204, put=None)
+    result = await s.put_setting(session, "t", CAM, "soft_reset", None)
+    kwargs = session.request.call_args.kwargs
+    assert kwargs["data"] == ""
+    assert "json" not in kwargs
+    assert (result.status, result.sent) == (204, None)
+
+
+async def test_getters_raise_privacy_error_on_443() -> None:
+    for call in (s.get_motion_zones, s.get_privacy_masks):
+        session = _session()
+        session.get = MagicMock(return_value=_with_get_status(443, "private"))
+        with pytest.raises(s.BoschCameraPrivacyModeError) as info:
+            await call(session, "t", CAM)
+        assert (info.value.status, info.value.body) == (443, "private")
+
+
+async def test_getter_other_status_keeps_plain_connection_error() -> None:
+    session = _session()
+    session.get = MagicMock(return_value=_with_get_status(500, "oops"))
+    with pytest.raises(BoschCameraConnectionError) as info:
+        await s.get_privacy_masks(session, "t", CAM)
+    assert not isinstance(info.value, s.BoschCameraPrivacyModeError)
+    assert (info.value.status, info.value.body) == (500, "oops")
+
+
+async def test_fetch_passes_privacy_error_through() -> None:
+    err = s.BoschCameraPrivacyModeError("x", status=443)
+    session = _session()
+    session.get = MagicMock(side_effect=err)
+    with pytest.raises(s.BoschCameraPrivacyModeError) as info:
+        await s.get_privacy_masks(session, "t", CAM)
+    assert info.value is err
+
+
+def _with_get_status(status: int, text: str) -> MagicMock:
+    cm = _cm(status, None)
+    cm.__aenter__.return_value.text = AsyncMock(return_value=text)
+    return cm

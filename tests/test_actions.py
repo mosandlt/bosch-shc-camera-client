@@ -12,6 +12,7 @@ from bosch_shc_camera_client.actions import (
     hard_reset,
     panic_alarm,
     ping,
+    ping_raw,
     soft_reset,
 )
 from bosch_shc_camera_client.cameras import (
@@ -101,3 +102,32 @@ async def test_ping_errors() -> None:
         await ping(_session(raises=TimeoutError()), "tok", CAM_ID)
     with pytest.raises(BoschCameraInvalidResponseError):
         await ping(_session(status=200, text='""'), "tok", CAM_ID)
+
+
+@pytest.mark.parametrize(
+    ("status", "text", "expected"),
+    [
+        (200, '"ONLINE"', ("ONLINE", True)),
+        (200, "UPDATING_FW_9", ("UPDATING", True)),
+        (200, '""', ("", True)),
+        (444, "", ("SESSION_LIMIT", True)),
+        (401, "", ("", False)),
+        (500, "", ("", False)),
+    ],
+)
+async def test_ping_raw(status: int, text: str, expected: tuple[str, bool]) -> None:
+    assert await ping_raw(_session(status=status, text=text), "tok", CAM_ID) == expected
+
+
+@pytest.mark.parametrize("err", [TimeoutError(), aiohttp.ClientError("x")])
+async def test_ping_raw_network_error(err: Exception) -> None:
+    assert await ping_raw(_session(raises=err), "tok", CAM_ID) == ("", False)
+
+
+async def test_action_errors_carry_status_and_body() -> None:
+    with pytest.raises(BoschCameraAuthError) as info:
+        await panic_alarm(_session(status=403, text="denied"), "tok", CAM_ID, True)
+    assert (info.value.status, info.value.body) == (403, "denied")
+    with pytest.raises(BoschCameraConnectionError) as cinfo:
+        await ping(_session(status=500, text="boom"), "tok", CAM_ID)
+    assert (cinfo.value.status, cinfo.value.body) == (500, "boom")
