@@ -123,14 +123,18 @@ def _parse_camera(item: Any) -> Camera:
     )
 
 
-async def list_cameras(
-    session: aiohttp.ClientSession, token: str, *, api_url: str = CLOUD_API
-) -> list[Camera]:
-    """Return the cameras of the account that owns `token`."""
+async def fetch_json(
+    session: aiohttp.ClientSession,
+    token: str,
+    url: str,
+    what: str,
+    timeout: float = LIST_TIMEOUT,
+) -> Any:
+    """GET `url` with the bearer token and return the decoded JSON body."""
     try:
-        async with asyncio.timeout(LIST_TIMEOUT):
+        async with asyncio.timeout(timeout):
             async with session.get(
-                f"{api_url}/v11/video_inputs",
+                url,
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Accept": "application/json",
@@ -140,13 +144,22 @@ async def list_cameras(
                     raise BoschCameraAuthError(f"Token rejected (HTTP {resp.status})")
                 if resp.status != 200:
                     raise BoschCameraConnectionError(
-                        f"Camera list returned HTTP {resp.status}"
+                        f"{what} returned HTTP {resp.status}"
                     )
-                payload = await resp.json(content_type=None)
+                return await resp.json(content_type=None)
     except (TimeoutError, aiohttp.ClientError) as err:
         raise BoschCameraConnectionError(str(err) or type(err).__name__) from err
     except ValueError as err:
         raise BoschCameraInvalidResponseError("Response is not JSON") from err
+
+
+async def list_cameras(
+    session: aiohttp.ClientSession, token: str, *, api_url: str = CLOUD_API
+) -> list[Camera]:
+    """Return the cameras of the account that owns `token`."""
+    payload = await fetch_json(
+        session, token, f"{api_url}/v11/video_inputs", "Camera list"
+    )
     if not isinstance(payload, list):
         raise BoschCameraInvalidResponseError("Camera list is not an array")
     return [_parse_camera(item) for item in payload]

@@ -10,7 +10,6 @@ shape.
 
 from __future__ import annotations
 
-import asyncio
 import math
 from dataclasses import dataclass
 from typing import Any
@@ -18,13 +17,10 @@ from typing import Any
 import aiohttp
 
 from .cameras import (
-    BoschCameraAuthError,
-    BoschCameraConnectionError,
     BoschCameraInvalidResponseError,
+    fetch_json,
 )
 from .cloud import CLOUD_API
-
-STATE_TIMEOUT = 15
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,32 +82,6 @@ class FirmwareStatus:
     updating: bool
 
 
-async def _get_json(
-    session: aiohttp.ClientSession, token: str, url: str, what: str
-) -> Any:
-    """GET `url` with the bearer token and return the decoded JSON body."""
-    try:
-        async with asyncio.timeout(STATE_TIMEOUT):
-            async with session.get(
-                url,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/json",
-                },
-            ) as resp:
-                if resp.status in (401, 403):
-                    raise BoschCameraAuthError(f"Token rejected (HTTP {resp.status})")
-                if resp.status != 200:
-                    raise BoschCameraConnectionError(
-                        f"{what} returned HTTP {resp.status}"
-                    )
-                return await resp.json(content_type=None)
-    except (TimeoutError, aiohttp.ClientError) as err:
-        raise BoschCameraConnectionError(str(err) or type(err).__name__) from err
-    except ValueError as err:
-        raise BoschCameraInvalidResponseError("Response is not JSON") from err
-
-
 async def _get_object(
     session: aiohttp.ClientSession,
     token: str,
@@ -120,7 +90,7 @@ async def _get_object(
     api_url: str,
 ) -> dict[str, Any]:
     """GET a per-camera endpoint whose body must be a JSON object."""
-    payload = await _get_json(
+    payload = await fetch_json(
         session,
         token,
         f"{api_url}/v11/video_inputs/{camera_id}/{endpoint}",
@@ -135,7 +105,7 @@ async def get_camera_account_states(
     session: aiohttp.ClientSession, token: str, *, api_url: str = CLOUD_API
 ) -> dict[str, CameraAccountStates]:
     """Return privacy and notification state per camera id from the camera list."""
-    payload = await _get_json(
+    payload = await fetch_json(
         session, token, f"{api_url}/v11/video_inputs", "Camera list"
     )
     if not isinstance(payload, list):
