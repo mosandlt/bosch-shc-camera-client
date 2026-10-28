@@ -95,7 +95,13 @@ async def test_wifi_info() -> None:
     assert await get_wifi_info(
         _session(payload={"signalStrength": 72.0}), "t", CAM_ID
     ) == WifiInfo(72)
-    for body in ({}, {"signalStrength": True}, {"signalStrength": "x"}):
+    for body in (
+        {},
+        {"signalStrength": True},
+        {"signalStrength": "x"},
+        {"signalStrength": float("inf")},
+        {"signalStrength": float("nan")},
+    ):
         assert (
             await get_wifi_info(_session(payload=body), "t", CAM_ID)
         ).signal_strength is None
@@ -137,6 +143,18 @@ async def test_light_state() -> None:
     )
     assert off == LightState(False, False, None)
     assert not off.any_on
+    non_finite = await get_light_state(
+        _session(
+            payload={
+                "frontLightOn": True,
+                "wallwasherOn": False,
+                "frontLightIntensity": float("inf"),
+            }
+        ),
+        "t",
+        CAM_ID,
+    )
+    assert non_finite.front_light_intensity is None
     with pytest.raises(BoschCameraInvalidResponseError):
         await get_light_state(_session(payload={"frontLightOn": True}), "t", CAM_ID)
 

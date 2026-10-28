@@ -11,6 +11,7 @@ shape.
 from __future__ import annotations
 
 import asyncio
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -173,7 +174,11 @@ async def get_wifi_info(
     """Return the Wi-Fi signal strength (percent) of a camera."""
     body = await _get_object(session, token, camera_id, "wifiinfo", api_url)
     signal = body.get("signalStrength")
-    if isinstance(signal, bool) or not isinstance(signal, (int, float)):
+    if (
+        isinstance(signal, bool)
+        or not isinstance(signal, (int, float))
+        or not math.isfinite(signal)
+    ):
         return WifiInfo(signal_strength=None)
     return WifiInfo(signal_strength=int(signal))
 
@@ -231,7 +236,9 @@ async def get_light_state(
         wallwasher_on=wall,
         front_light_intensity=(
             float(intensity)
-            if isinstance(intensity, (int, float)) and not isinstance(intensity, bool)
+            if isinstance(intensity, (int, float))
+            and not isinstance(intensity, bool)
+            and math.isfinite(intensity)
             else None
         ),
     )
