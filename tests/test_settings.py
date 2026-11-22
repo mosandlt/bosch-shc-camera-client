@@ -525,3 +525,170 @@ def _with_get_status(status: int, text: str) -> MagicMock:
     cm = _cm(status, None)
     cm.__aenter__.return_value.text = AsyncMock(return_value=text)
     return cm
+
+
+# --- motion detection ------------------------------------------------------
+
+
+async def test_set_motion_enabled_keeps_sensitivity() -> None:
+    session = _session(get={"enabled": True, "motionAlarmConfiguration": "LOW"})
+    result = await s.set_motion_enabled(session, "t", CAM, False)
+    assert _sent(session) == (
+        "PUT",
+        f"{BASE}/motion",
+        {"enabled": False, "motionAlarmConfiguration": "LOW"},
+    )
+    assert result.status == 200
+    assert session.get.call_args.args[0] == f"{BASE}/motion"
+
+
+@pytest.mark.parametrize(
+    "body", [{"enabled": True}, {"enabled": True, "motionAlarmConfiguration": None}]
+)
+async def test_set_motion_enabled_needs_sensitivity(body: dict[str, Any]) -> None:
+    session = _session(get=body)
+    with pytest.raises(BoschCameraInvalidResponseError, match="motionAlarm"):
+        await s.set_motion_enabled(session, "t", CAM, True)
+    session.request.assert_not_called()
+
+
+async def test_set_motion_enabled_privacy_error() -> None:
+    session = _session(get={"enabled": True, "motionAlarmConfiguration": "HIGH"})
+    session.request = MagicMock(return_value=_cm(443, None))
+    with pytest.raises(s.BoschCameraPrivacyModeError):
+        await s.set_motion_enabled(session, "t", CAM, True)
+
+
+# --- Gen2 light groups -----------------------------------------------------
+
+_SWITCH = {
+    "frontLightSettings": {"brightness": 70, "color": None, "whiteBalance": 0.2},
+    "topLedLightSettings": {"brightness": 40, "color": "#FF8800", "whiteBalance": None},
+    "bottomLedLightSettings": None,
+}
+
+
+async def test_get_lighting_switch_parses_groups() -> None:
+    session = _session(get=_SWITCH)
+    state = await s.get_lighting_switch(session, "t", CAM)
+    assert session.get.call_args.args[0] == f"{BASE}/lighting/switch"
+    assert state.front == s.LightGroup(70, None, 0.2)
+    assert state.top_led == s.LightGroup(40, "#FF8800", None)
+    assert state.bottom_led == s.LightGroup(0, None, -1.0)
+    assert state.raw == _SWITCH
+
+
+async def test_get_lighting_switch_drops_bad_values() -> None:
+    body = {
+        "frontLightSettings": {"brightness": "x", "color": "red", "whiteBalance": "y"},
+    }
+    state = await s.get_lighting_switch(_session(get=body), "t", CAM)
+    assert state.front == s.LightGroup(0, None, None)
+    assert state.top_led == s.LightGroup(0, None, -1.0)
+
+
+async def test_set_lighting_switch_sends_all_groups() -> None:
+    session = _session(get=_SWITCH, status=204)
+    await s.set_lighting_switch(
+        session, "t", CAM, top_led=s.LightGroup(0, color="#00FF00")
+    )
+    method, url, body = _sent(session)
+    assert (method, url) == ("PUT", f"{BASE}/lighting/switch")
+    assert body == {
+        "frontLightSettings": {"brightness": 70, "color": None, "whiteBalance": 0.2},
+        "topLedLightSettings": {
+            "brightness": 0,
+            "color": "#00FF00",
+            "whiteBalance": None,
+        },
+        "bottomLedLightSettings": {
+            "brightness": 0,
+            "color": None,
+            "whiteBalance": -1.0,
+        },
+    }
+
+
+async def test_set_lighting_switch_repairs_read_groups() -> None:
+    current = {
+        "frontLightSettings": {"brightness": 150, "whiteBalance": 5.0},
+        "topLedLightSettings": {"brightness": -3, "color": "#abcdef"},
+        "bottomLedLightSettings": {"brightness": 10},
+    }
+    session = _session(get=current)
+    await s.set_lighting_switch(
+        session,
+        "t",
+        CAM,
+        front=s.LightGroup(100, white_balance=1.0),
+        bottom_led=s.LightGroup(5, white_balance=-0.5),
+    )
+    body = _sent(session)[2]
+    assert body["frontLightSettings"] == {
+        "brightness": 100,
+        "color": None,
+        "whiteBalance": 1.0,
+    }
+    assert body["topLedLightSettings"] == {
+        "brightness": 0,
+        "color": "#abcdef",
+        "whiteBalance": None,
+    }
+    assert body["bottomLedLightSettings"]["whiteBalance"] == -0.5
+
+
+async def test_set_lighting_switch_repairs_out_of_range_white() -> None:
+    session = _session(
+        get={"frontLightSettings": {"brightness": 150, "whiteBalance": 5.0}}
+    )
+    await s.set_lighting_switch(session, "t", CAM, top_led=s.LightGroup(1, "#000000"))
+    assert _sent(session)[2]["frontLightSettings"] == {
+        "brightness": 100,
+        "color": None,
+        "whiteBalance": -1.0,
+    }
+
+
+@pytest.mark.parametrize(
+    "group",
+    [
+        s.LightGroup(101, white_balance=0.0),
+        s.LightGroup(-1, white_balance=0.0),
+        s.LightGroup(50),
+        s.LightGroup(50, "#FFFFFF", 0.0),
+        s.LightGroup(50, "white"),
+        s.LightGroup(50, white_balance=1.5),
+        s.LightGroup(50, white_balance=float("nan")),
+        s.LightGroup(50, white_balance=True),
+    ],
+)
+async def test_set_lighting_switch_rejects_bad_group(group: s.LightGroup) -> None:
+    session = _session(get=_SWITCH)
+    with pytest.raises(ValueError):
+        await s.set_lighting_switch(session, "t", CAM, front=group)
+    session.get.assert_not_called()
+
+
+async def test_set_lighting_switch_needs_a_group() -> None:
+    with pytest.raises(ValueError):
+        await s.set_lighting_switch(_session(get=_SWITCH), "t", CAM)
+
+
+@pytest.mark.parametrize(
+    ("group", "path"),
+    [(s.LightSwitchGroup.FRONT, "front"), ("topdown", "topdown")],
+)
+async def test_set_light_switch_enabled(group: Any, path: str) -> None:
+    session = _session(status=204)
+    await s.set_light_switch_enabled(session, "t", CAM, group, True)
+    assert _sent(session) == (
+        "PUT",
+        f"{BASE}/lighting/switch/{path}",
+        {"enabled": True},
+    )
+    session.get.assert_not_called()
+
+
+async def test_set_light_switch_enabled_rejects_unknown_group() -> None:
+    with pytest.raises(ValueError):
+        await s.set_light_switch_enabled(_session(), "t", CAM, "bottom", False)  # type: ignore[arg-type]

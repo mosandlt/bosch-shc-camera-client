@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.8.0] - 2026-11-22
+
+Add `settings.set_motion_enabled`, `get_lighting_switch`, `set_lighting_switch`
+(Eyes Outdoor II front/top/bottom LED groups, typed `LightGroup`) and
+`set_light_switch_enabled`. `BoschCameraClient` gains motion, audio and light
+methods; its read-modify-write calls are serialized per camera. No dependency changes.
+
 ## [v0.7.1] - 2026-11-22
 
 Add `BoschCameraClient.set_notifications`, delegating to `cloud_set_notifications`.

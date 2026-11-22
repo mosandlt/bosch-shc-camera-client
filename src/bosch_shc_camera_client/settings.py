@@ -42,6 +42,13 @@ ERROR_TEXT_LIMIT = 200
 # can build an arbitrary path.
 ENDPOINT_PATTERN = re.compile(r"[A-Za-z_]+(?:/[A-Za-z_]+){0,2}")
 CAMERA_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
+_COLOR_PATTERN = re.compile(r"#[0-9A-Fa-f]{6}")
+LIGHT_GROUP_KEYS = (
+    "frontLightSettings",
+    "topLedLightSettings",
+    "bottomLedLightSettings",
+)
+DEFAULT_WHITE_BALANCE = -1.0
 
 
 class BoschCameraPrivacyModeError(BoschCameraConnectionError):
@@ -113,6 +120,36 @@ class AmbientLighting:
 
     enabled: bool | None
     schedule_type: str | None
+    raw: dict[str, Any] = field(compare=False)
+
+
+class LightSwitchGroup(StrEnum):
+    """Toggle endpoint of an Eyes Outdoor II light: front, or top and bottom."""
+
+    FRONT = "front"
+    TOPDOWN = "topdown"
+
+
+@dataclass(frozen=True, slots=True)
+class LightGroup:
+    """One LED group: brightness 0 to 100 with a `#RRGGBB` color or a white balance.
+
+    `white_balance` runs from -1.0 (cool) to 1.0 (warm). A write needs exactly
+    one of `color` and `white_balance`.
+    """
+
+    brightness: int
+    color: str | None = None
+    white_balance: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LightingSwitch:
+    """LED groups of an Eyes Outdoor II; `raw` is the full object."""
+
+    front: LightGroup
+    top_led: LightGroup
+    bottom_led: LightGroup
     raw: dict[str, Any] = field(compare=False)
 
 
@@ -299,14 +336,23 @@ async def _merge_put(
     endpoint: str,
     changes: Mapping[str, Any],
     api_url: str,
+    *,
+    required: tuple[str, ...] = (),
 ) -> SettingWriteResult:
-    """GET the complete object, apply `changes`, PUT it back."""
+    """GET the complete object, apply `changes`, PUT it back.
+
+    Keys in `required` must be present in the current object; the PUT is not
+    sent otherwise, so no default is invented for them.
+    """
     changes = dict(changes)
     if any(isinstance(v, float) and not math.isfinite(v) for v in changes.values()):
         raise ValueError("changes must not contain NaN or infinity")
     current = await _get_object(session, token, cam_id, endpoint, api_url)
     if not current:
         raise BoschCameraInvalidResponseError(f"{endpoint} is empty")
+    missing = [key for key in required if current.get(key) is None]
+    if missing:
+        raise BoschCameraInvalidResponseError(f"{endpoint} lacks {', '.join(missing)}")
     return await _send(
         session,
         token,
@@ -528,6 +574,155 @@ async def get_ambient_lighting(
         schedule = schedule.get("type")
     return AmbientLighting(
         _flag(data.get("ambientLightEnabled")), _text(schedule), data
+    )
+
+
+def _light_group(value: Any) -> LightGroup:
+    """Parse one LED group; a missing or null group reads as off."""
+    if not isinstance(value, dict):
+        return LightGroup(0, white_balance=DEFAULT_WHITE_BALANCE)
+    color = value.get("color")
+    return LightGroup(
+        _integer(value.get("brightness")) or 0,
+        color if isinstance(color, str) and _COLOR_PATTERN.fullmatch(color) else None,
+        _number(value.get("whiteBalance")),
+    )
+
+
+def _light_group_body(group: LightGroup) -> dict[str, Any]:
+    """Validated JSON for one LED group: exactly one of color and white balance."""
+    _check_range("brightness", group.brightness, LEVEL_RANGE)
+    if (group.color is None) == (group.white_balance is None):
+        raise ValueError("set exactly one of color and white_balance")
+    if group.color is not None and not _COLOR_PATTERN.fullmatch(group.color):
+        raise ValueError("color must be #RRGGBB")
+    if group.white_balance is not None and (
+        _number(group.white_balance) is None or not -1.0 <= group.white_balance <= 1.0
+    ):
+        raise ValueError("white_balance must be between -1.0 and 1.0")
+    return {
+        "brightness": group.brightness,
+        "color": group.color,
+        "whiteBalance": group.white_balance,
+    }
+
+
+async def get_lighting_switch(
+    session: aiohttp.ClientSession,
+    token: str,
+    cam_id: str,
+    *,
+    api_url: str = CLOUD_API,
+) -> LightingSwitch:
+    """Return the front, top and bottom LED groups of an Eyes Outdoor II."""
+    data = await _get_object(session, token, cam_id, "lighting/switch", api_url)
+    front, top_led, bottom_led = (_light_group(data.get(k)) for k in LIGHT_GROUP_KEYS)
+    return LightingSwitch(front, top_led, bottom_led, data)
+
+
+async def set_lighting_switch(
+    session: aiohttp.ClientSession,
+    token: str,
+    cam_id: str,
+    *,
+    front: LightGroup | None = None,
+    top_led: LightGroup | None = None,
+    bottom_led: LightGroup | None = None,
+    api_url: str = CLOUD_API,
+) -> SettingWriteResult:
+    """Replace the given LED groups; the others are read first and sent unchanged.
+
+    The endpoint needs all three groups in every PUT. Brightness 0 turns a
+    group off; the camera ignores a white balance sent with brightness 0.
+    """
+    changes = {
+        key: _light_group_body(group)
+        for key, group in zip(
+            LIGHT_GROUP_KEYS, (front, top_led, bottom_led), strict=True
+        )
+        if group is not None
+    }
+    if not changes:
+        raise ValueError("at least one light group must be given")
+    current = await get_lighting_switch(session, token, cam_id, api_url=api_url)
+    body = {
+        key: changes.get(key) or _light_group_body(_writable(group))
+        for key, group in zip(
+            LIGHT_GROUP_KEYS,
+            (current.front, current.top_led, current.bottom_led),
+            strict=True,
+        )
+    }
+    return await _send(
+        session,
+        token,
+        "PUT",
+        _url(api_url, cam_id, "lighting/switch"),
+        body,
+        "lighting/switch",
+    )
+
+
+def _writable(group: LightGroup) -> LightGroup:
+    """A read group as it can be sent back: color wins, else a white balance."""
+    brightness = max(LEVEL_RANGE[0], min(LEVEL_RANGE[1], group.brightness))
+    if group.color is not None:
+        return LightGroup(brightness, group.color)
+    white = group.white_balance
+    if white is None or not -1.0 <= white <= 1.0:
+        white = DEFAULT_WHITE_BALANCE
+    return LightGroup(brightness, white_balance=white)
+
+
+async def set_light_switch_enabled(
+    session: aiohttp.ClientSession,
+    token: str,
+    cam_id: str,
+    group: LightSwitchGroup,
+    enabled: bool,
+    *,
+    api_url: str = CLOUD_API,
+) -> SettingWriteResult:
+    """Switch the front light or the top and bottom LEDs together on or off.
+
+    This only toggles the group; it never sets a brightness, so a group whose
+    brightness is 0 stays dark after enabling it.
+    """
+    endpoint = f"lighting/switch/{LightSwitchGroup(group).value}"
+    return await _send(
+        session,
+        token,
+        "PUT",
+        _url(api_url, cam_id, endpoint),
+        {"enabled": enabled},
+        endpoint,
+    )
+
+
+# --- Motion detection ----------------------------------------------------
+
+
+async def set_motion_enabled(
+    session: aiohttp.ClientSession,
+    token: str,
+    cam_id: str,
+    enabled: bool,
+    *,
+    api_url: str = CLOUD_API,
+) -> SettingWriteResult:
+    """Switch motion detection on or off; the sensitivity is kept.
+
+    The PUT needs `motionAlarmConfiguration`, so the call fails instead of
+    guessing one when the camera does not report it.
+    """
+    return await _merge_put(
+        session,
+        token,
+        cam_id,
+        "motion",
+        {"enabled": enabled},
+        api_url,
+        required=("motionAlarmConfiguration",),
     )
 
 

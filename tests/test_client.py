@@ -116,3 +116,103 @@ async def test_open_local_live_connection() -> None:
     assert fn.await_args_list[0].kwargs == {"high_quality": True, "api_url": API}
     assert fn.await_args_list[1].args == (session, "token-2", CAM_ID)
     assert fn.await_args_list[1].kwargs == {"high_quality": False, "api_url": API}
+
+
+@pytest.mark.parametrize(
+    ("method", "target", "args", "kwargs", "expected_kwargs"),
+    [
+        ("get_motion_settings", "get_motion_settings", (CAM_ID,), {}, {"api_url": API}),
+        (
+            "set_motion_enabled",
+            "set_motion_enabled",
+            (CAM_ID, False),
+            {},
+            {"api_url": API},
+        ),
+        ("get_audio_settings", "get_audio_settings", (CAM_ID,), {}, {"api_url": API}),
+        (
+            "set_audio_settings",
+            "set_audio_settings",
+            (CAM_ID,),
+            {"speaker_level": 40},
+            {
+                "audio_enabled": None,
+                "microphone_level": None,
+                "speaker_level": 40,
+                "api_url": API,
+            },
+        ),
+        ("get_light_state", "get_light_state", (CAM_ID,), {}, {"api_url": API}),
+        (
+            "set_camera_light",
+            "cloud_set_camera_light",
+            (CAM_ID, True),
+            {"gen2": True},
+            {"gen2": True, "last_front_intensity": 1.0},
+        ),
+        (
+            "get_lighting_switch",
+            "get_lighting_switch",
+            (CAM_ID,),
+            {},
+            {"api_url": API},
+        ),
+        (
+            "set_lighting_switch",
+            "set_lighting_switch",
+            (CAM_ID,),
+            {"top_led": "group"},
+            {"front": None, "top_led": "group", "bottom_led": None, "api_url": API},
+        ),
+        (
+            "set_light_switch_enabled",
+            "set_light_switch_enabled",
+            (CAM_ID, "front", True),
+            {},
+            {"api_url": API},
+        ),
+    ],
+)
+async def test_settings_delegates(
+    method: str,
+    target: str,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+    expected_kwargs: dict[str, object],
+) -> None:
+    client, session = _make(API)
+    sentinel = MagicMock()
+    with patch(
+        f"bosch_shc_camera_client.client.{target}", AsyncMock(return_value=sentinel)
+    ) as fn:
+        assert await getattr(client, method)(*args, **kwargs) is sentinel
+        await getattr(client, method)(*args, **kwargs)
+    assert fn.await_args_list[0].args == (session, "token-1", *args)
+    assert fn.await_args_list[1].args == (session, "token-2", *args)
+    assert fn.await_args_list[0].kwargs == expected_kwargs
+
+
+async def test_read_modify_writes_are_serialized_per_camera() -> None:
+    import asyncio
+
+    client, _ = _make()
+    running = 0
+    peak = 0
+
+    async def fake(*_args: object, **_kwargs: object) -> None:
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0)
+        running -= 1
+
+    with patch("bosch_shc_camera_client.client.set_audio_settings", fake):
+        await asyncio.gather(
+            client.set_audio_settings(CAM_ID, speaker_level=1),
+            client.set_audio_settings(CAM_ID, microphone_level=2),
+        )
+    assert peak == 1
+    assert client._write_lock(CAM_ID, "audio") is client._write_lock(CAM_ID, "audio")
+    assert client._write_lock(CAM_ID, "audio") is not client._write_lock(
+        CAM_ID, "motion"
+    )
