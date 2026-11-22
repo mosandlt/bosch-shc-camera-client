@@ -90,6 +90,19 @@ async def test_set_privacy_mode() -> None:
     assert fn.await_args_list[1].args == (session, "token-2", CAM_ID, False)
 
 
+async def test_set_notifications() -> None:
+    client, session = _make()
+    sentinel = MagicMock()
+    with patch(
+        "bosch_shc_camera_client.client.cloud_set_notifications",
+        AsyncMock(return_value=sentinel),
+    ) as fn:
+        assert await client.set_notifications(CAM_ID, True) is sentinel
+        await client.set_notifications(CAM_ID, False)
+    assert fn.await_args_list[0].args == (session, "token-1", CAM_ID, True)
+    assert fn.await_args_list[1].args == (session, "token-2", CAM_ID, False)
+
+
 async def test_open_local_live_connection() -> None:
     client, session = _make(API)
     sentinel = MagicMock()

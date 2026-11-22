@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.7.1] - 2026-11-22
+
+Add `BoschCameraClient.set_notifications`, delegating to `cloud_set_notifications`.
+No dependency changes.
+
 ## [v0.7.0] - 2026-10-28
 
 Add `BoschCameraClient` (`client.py`): holds the aiohttp `ClientSession` and an

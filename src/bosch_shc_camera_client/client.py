@@ -12,7 +12,12 @@ from collections.abc import Awaitable, Callable
 import aiohttp
 
 from .cameras import Camera, get_latest_event_image, list_cameras
-from .cloud import CLOUD_API, CloudPutResult, cloud_set_privacy_mode
+from .cloud import (
+    CLOUD_API,
+    CloudPutResult,
+    cloud_set_notifications,
+    cloud_set_privacy_mode,
+)
 from .live import LiveConnection, open_local_live_connection
 from .states import CameraAccountStates, get_camera_account_states
 
@@ -58,6 +63,12 @@ class BoschCameraClient:
     async def set_privacy_mode(self, camera_id: str, enabled: bool) -> CloudPutResult:
         """Switch privacy mode of a camera on or off."""
         return await cloud_set_privacy_mode(
+            self._session, await self._token_source(), camera_id, enabled
+        )
+
+    async def set_notifications(self, camera_id: str, enabled: bool) -> CloudPutResult:
+        """Switch the push notifications of a camera on or off."""
+        return await cloud_set_notifications(
             self._session, await self._token_source(), camera_id, enabled
         )
 
