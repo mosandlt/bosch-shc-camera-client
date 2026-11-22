@@ -113,8 +113,14 @@ async def test_motion_settings() -> None:
         MotionSettings(True, "HIGH")
     )
     assert await get_motion_settings(
-        _session(payload={"enabled": "yes"}), "t", CAM_ID
+        _session(payload={"enabled": False}), "t", CAM_ID
     ) == (MotionSettings(False, None))
+
+
+@pytest.mark.parametrize("body", [{}, {"enabled": "yes"}, {"enabled": None}])
+async def test_motion_settings_without_boolean_enabled(body: dict) -> None:
+    with pytest.raises(BoschCameraInvalidResponseError):
+        await get_motion_settings(_session(payload=body), "t", CAM_ID)
 
 
 async def test_notification_types() -> None:

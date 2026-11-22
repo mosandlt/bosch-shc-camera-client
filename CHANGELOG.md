@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.8.1] - 2026-11-22
+
+`get_motion_settings` raises `BoschCameraInvalidResponseError` when the response has
+no boolean `enabled`, instead of reading it as off. No dependency changes.
+
 ## [v0.8.0] - 2026-11-22
 
 Add `settings.set_motion_enabled`, `get_lighting_switch`, `set_lighting_switch`

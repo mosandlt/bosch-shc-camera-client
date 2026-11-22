@@ -160,11 +160,17 @@ async def get_motion_settings(
     *,
     api_url: str = CLOUD_API,
 ) -> MotionSettings:
-    """Return whether motion detection is on and its sensitivity level."""
+    """Return whether motion detection is on and its sensitivity level.
+
+    A response without a boolean `enabled` raises instead of reading as off.
+    """
     body = await _get_object(session, token, camera_id, "motion", api_url)
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        raise BoschCameraInvalidResponseError("motion has no boolean 'enabled'")
     sensitivity = body.get("motionAlarmConfiguration")
     return MotionSettings(
-        enabled=body.get("enabled") is True,
+        enabled=enabled,
         sensitivity=sensitivity
         if isinstance(sensitivity, str) and sensitivity
         else None,
