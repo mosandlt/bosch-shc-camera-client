@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 from .cloud import CLOUD_API
+from .cloud_tls import cloud_ssl_context
 from .media_transfer import is_safe_bosch_url
 
 LIST_TIMEOUT = 15
@@ -173,6 +174,7 @@ async def fetch_json(
         async with asyncio.timeout(timeout):
             async with session.get(
                 url,
+                ssl=cloud_ssl_context(),
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Accept": "application/json",
@@ -221,6 +223,7 @@ async def get_latest_event_image(
         async with asyncio.timeout(EVENTS_TIMEOUT):
             async with session.get(
                 f"{api_url}/v11/events",
+                ssl=cloud_ssl_context(),
                 params={"videoInputId": camera_id},
                 headers={
                     "Authorization": f"Bearer {token}",
@@ -264,6 +267,7 @@ async def _download_image(
             # No redirects: only `url` itself was checked against the allowlist.
             async with session.get(
                 url,
+                ssl=cloud_ssl_context(),
                 headers={"Authorization": f"Bearer {token}", "Accept": "*/*"},
                 allow_redirects=False,
             ) as resp:

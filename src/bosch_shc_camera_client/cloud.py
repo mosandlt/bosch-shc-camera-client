@@ -35,6 +35,8 @@ from typing import Any
 
 import aiohttp
 
+from .cloud_tls import cloud_ssl_context
+
 _LOGGER = logging.getLogger(__name__)
 
 # Bosch's cloud API returns any of these for a successful write.
@@ -94,7 +96,9 @@ async def cloud_put_json(
     }
     try:
         async with asyncio.timeout(timeout):
-            async with session.put(url, json=body, headers=headers) as resp:
+            async with session.put(
+                url, json=body, headers=headers, ssl=cloud_ssl_context()
+            ) as resp:
                 ok = resp.status in _OK_STATUSES
                 parsed: dict[str, Any] | None = None
                 text: str | None = None

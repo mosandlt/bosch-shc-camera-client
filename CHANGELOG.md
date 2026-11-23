@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.8.2] - 2026-11-23
+
+Cloud API requests now verify the server against the system roots plus the
+private CA that signs the cloud API certificate (`cloud_tls.cloud_ssl_context`).
+Before, a default HTTP session failed certificate verification. No dependency
+changes.
+
 ## [v0.8.1] - 2026-11-22
 
 `get_motion_settings` raises `BoschCameraInvalidResponseError` when the response has

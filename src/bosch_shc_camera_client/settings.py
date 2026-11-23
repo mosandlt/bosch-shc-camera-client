@@ -28,6 +28,7 @@ from .cameras import (
     read_error_body,
 )
 from .cloud import CLOUD_API
+from .cloud_tls import cloud_ssl_context
 
 _E = TypeVar("_E", bound=StrEnum)
 
@@ -295,7 +296,9 @@ async def _send(
     }
     try:
         async with asyncio.timeout(WRITE_TIMEOUT):
-            async with session.request(method, url, headers=headers, **kwargs) as resp:
+            async with session.request(
+                method, url, headers=headers, ssl=cloud_ssl_context(), **kwargs
+            ) as resp:
                 if resp.status not in _OK_STATUSES:
                     detail = await read_error_body(resp)
                     if resp.status in (401, 403):
@@ -385,6 +388,7 @@ async def get_setting_raw(
         async with asyncio.timeout(timeout):
             async with session.get(
                 _url(api_url, cam_id, endpoint),
+                ssl=cloud_ssl_context(),
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Accept": "application/json",

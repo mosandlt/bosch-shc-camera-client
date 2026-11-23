@@ -19,6 +19,7 @@ from .cameras import (
     read_error_body,
 )
 from .cloud import CLOUD_API
+from .cloud_tls import cloud_ssl_context
 
 ACTION_TIMEOUT = 10
 PING_TIMEOUT = 5
@@ -51,6 +52,7 @@ async def _put_action(
         async with asyncio.timeout(ACTION_TIMEOUT):
             async with session.put(
                 url,
+                ssl=cloud_ssl_context(),
                 headers={
                     "Authorization": f"Bearer {token}",
                     "Content-Type": "application/json",
@@ -118,6 +120,7 @@ async def ping(
         async with asyncio.timeout(PING_TIMEOUT):
             async with session.get(
                 _video_input_url(api_url, camera_id, "ping"),
+                ssl=cloud_ssl_context(),
                 headers={"Authorization": f"Bearer {token}"},
             ) as resp:
                 await raise_if_token_rejected(resp)
@@ -149,6 +152,7 @@ async def ping_raw(
         async with asyncio.timeout(PING_TIMEOUT):
             async with session.get(
                 _video_input_url(api_url, camera_id, "ping"),
+                ssl=cloud_ssl_context(),
                 headers={"Authorization": f"Bearer {token}"},
             ) as resp:
                 if resp.status == SESSION_LIMIT_HTTP_STATUS:
