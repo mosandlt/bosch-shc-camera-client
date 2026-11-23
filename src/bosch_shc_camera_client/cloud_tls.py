@@ -11,6 +11,7 @@ Video CA 2A SHA-256 fingerprint:
 
 from __future__ import annotations
 
+import functools
 import ssl
 import threading
 
@@ -53,18 +54,19 @@ nvQ8Em1LhUA=
 -----END CERTIFICATE-----
 """
 
-_context: ssl.SSLContext | None = None
 _lock = threading.Lock()
+
+
+@functools.cache
+def _build_context() -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    # The embedded CA is an intermediate; trust it without its root.
+    ctx.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
+    ctx.load_verify_locations(cadata=_BOSCH_CLOUD_CA_PEM)
+    return ctx
 
 
 def cloud_ssl_context() -> ssl.SSLContext:
     """Return the shared verifying context for cloud API requests."""
-    global _context
     with _lock:
-        if _context is None:
-            ctx = ssl.create_default_context()
-            # The embedded CA is an intermediate; trust it without its root.
-            ctx.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
-            ctx.load_verify_locations(cadata=_BOSCH_CLOUD_CA_PEM)
-            _context = ctx
-        return _context
+        return _build_context()

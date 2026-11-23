@@ -6,6 +6,7 @@ refresh and no retries, so an expired token surfaces as
 `BoschCameraAuthError` for the caller to handle.
 """
 
+# pylint: disable=duplicate-code
 from __future__ import annotations
 
 import asyncio

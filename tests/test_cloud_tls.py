@@ -5,7 +5,7 @@ import ssl
 import aiohttp
 import pytest
 
-from bosch_shc_camera_client import cloud, cloud_tls
+from bosch_shc_camera_client import cloud
 from bosch_shc_camera_client.client import BoschCameraClient
 from bosch_shc_camera_client.cloud_tls import cloud_ssl_context
 
@@ -21,7 +21,6 @@ def test_context_verifies_and_trusts_bosch_ca() -> None:
 
 def test_context_is_shared() -> None:
     assert cloud_ssl_context() is cloud_ssl_context()
-    assert cloud_tls._context is cloud_ssl_context()
 
 
 async def _token() -> str:

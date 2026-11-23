@@ -8,6 +8,7 @@ go through `fetch_json`; writes classify the HTTP status the same way:
 every PUT are written as GET, change the given fields, PUT.
 """
 
+# pylint: disable=duplicate-code
 from __future__ import annotations
 
 import asyncio
