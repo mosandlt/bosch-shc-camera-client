@@ -11,9 +11,7 @@ Video CA 2A SHA-256 fingerprint:
 
 from __future__ import annotations
 
-import functools
 import ssl
-import threading
 
 _BOSCH_CLOUD_CA_PEM = """\
 -----BEGIN CERTIFICATE-----
@@ -54,10 +52,7 @@ nvQ8Em1LhUA=
 -----END CERTIFICATE-----
 """
 
-_lock = threading.Lock()
 
-
-@functools.cache
 def _build_context() -> ssl.SSLContext:
     ctx = ssl.create_default_context()
     # The embedded CA is an intermediate; trust it without its root.
@@ -66,7 +61,11 @@ def _build_context() -> ssl.SSLContext:
     return ctx
 
 
+# Built at import: Home Assistant imports requirements in the executor, which
+# keeps the blocking certificate loading off the event loop.
+_CONTEXT = _build_context()
+
+
 def cloud_ssl_context() -> ssl.SSLContext:
     """Return the shared verifying context for cloud API requests."""
-    with _lock:
-        return _build_context()
+    return _CONTEXT

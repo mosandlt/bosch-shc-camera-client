@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.8.3] - 2026-11-26
+
+The TLS context for cloud requests is built when the module is imported instead of
+on the first request, so loading the system certificates no longer blocks the event
+loop. No dependency changes.
+
 ## [v0.8.2] - 2026-11-23
 
 Cloud API requests now verify the server against the system roots plus the
